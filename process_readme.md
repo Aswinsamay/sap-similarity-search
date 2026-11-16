@@ -1,33 +1,33 @@
 # Process: product similarity search
 
-A running record of what each stage found, what it does, and why. It is updated as each stage is finished.
+A running record of what each stage found, what it does, and why. It is updated as each stage is finished. The exercise itself is in [Problem_Statement.md](Problem_Statement.md); the short overview is [README.md](README.md).
 
 Data: `data/archive/marketing_sample_for_amazon_com-amazon_fashion_products__20200201_20200430__30k_data.ldjson`
 
-Stages 1 to 3 each have a module in `similarity/` that holds the logic and a numbered notebook at the repo root that walks through it. Notebooks call the module's functions; they never copy its logic. Stage 4 adds the web layer (`app.py`, `Dockerfile`) and stage 4b the Kubernetes files (`k8s/`). The evaluation (stage 5) is kept apart in `evals/`. Run everything from the repo root.
+Stages 1 to 3 and 6 to 8 each have a module in `similarity/` that holds the logic and a numbered notebook in `notebooks/` that walks through it. A notebook's first cell moves to the repo root, so it runs the same whether opened from `notebooks/` or the root. Notebooks call the module's functions; they never copy its logic. Stage 4 adds the web layer (`app.py`, `Dockerfile`) and stage 4b the Kubernetes files (`k8s/`). The evaluation (stage 5) is kept apart in `evals/`. Run everything from the repo root.
 
 ## Pipeline
 
 ```
 raw ldjson ─► 01 preprocessing ─► data/processed/products.parquet ─► 02 features ─► 03 similarity search ─► 04 API + Docker ─► 4b Kubernetes
                                                                                  ├─► 05 evaluation (scores every method)
-                                                                                 ├─► 06 text improvements
-                                                                                 ├─► 07 ANN index (bonus)
-                                                                                 └─► 08 images (optional)
+                                                                                 ├─► 06 title embeddings (MiniLM)
+                                                                                 ├─► 07 images (optional, CLIP)
+                                                                                 └─► 08 ANN index
 ```
 
 | Stage | Module | Notebook | Output | Status |
 |---|---|---|---|---|
-| 0 EDA | — | `eda.ipynb`, `eda_learning.ipynb` | Findings below | Done |
-| 1 Preprocessing | `similarity/preprocessing.py` | `01_preprocessing.ipynb` | `data/processed/products.parquet` | Done |
-| 2 Features | `similarity/features.py` | `02_features.ipynb` | `Features` object, built in memory | Done |
-| 3 Similarity search | `similarity/search.py` | `03_search.ipynb` | `find_similar_products` | Done |
-| 4 API + Docker | `app.py`, `Dockerfile` | `04_api.ipynb` | `GET /find_similar_products`, Docker image | Done |
+| 0 EDA | — | `notebooks/eda.ipynb` | Findings below | Done |
+| 1 Preprocessing | `similarity/preprocessing.py` | `notebooks/01_preprocessing.ipynb` | `data/processed/products.parquet` | Done |
+| 2 Features | `similarity/features.py` | `notebooks/02_features.ipynb` | `Features` object, built in memory | Done |
+| 3 Similarity search | `similarity/search.py` | `notebooks/03_search.ipynb` | `find_similar_products` | Done |
+| 4 API + Docker | `app.py`, `Dockerfile` | `notebooks/04_api.ipynb` | `GET /find_similar_products`, Docker image | Done |
 | 4b Kubernetes (optional) | `k8s/` | — (terminal commands below) | Deployment + Service on Docker Desktop | Done |
 | 5 Evaluation | `evals/` | — (`python -m evals.run_eval` writes the workbook) | `evals/eval_results.xlsx` | Done |
-| 6 Title embeddings | `similarity/embeddings.py` | `06_text_embeddings.ipynb` | `data/processed/title_embeddings.npz`, method `minilm` | Next |
-| 7 Images (optional) | `similarity/images.py` | `07_image_similarity.ipynb` | Photos (outside the repo), `data/processed/image_embeddings.npz`, methods `tfidf_image`, `minilm_image` | Planned |
-| 8 ANN index (bonus) | — | — | HNSW index, recall@k | Planned |
+| 6 Title embeddings | `similarity/embeddings.py` | `notebooks/06_text_embeddings.ipynb` | `data/processed/title_embeddings.npz`, method `minilm` | Done |
+| 7 Images (optional) | `similarity/images.py` | `notebooks/07_image_similarity.ipynb` | Photos (outside the repo), `data/processed/image_embeddings.npz`, methods `tfidf_image`, `minilm_image` | Done |
+| 8 ANN index | `similarity/ann.py` | `notebooks/08_ann.ipynb` | `data/processed/product_hnsw.faiss`, method `tfidf_ann` | Done |
 
 When each part runs:
 
@@ -37,12 +37,117 @@ When each part runs:
 | Once, when the server starts | Stage 2 turns the table into arrays: TF-IDF matrix, codes, numbers | about 0.5 s (2.8 s with imports) |
 | A request for a new product | Stage 3 scores it against all 30,000 products; the best 100 are kept | about 22 ms in Python, 38 ms over HTTP |
 | A request for a product asked before | The kept 100 are cut to `num_similar` | about 2 ms over HTTP |
+| Once, by hand, offline (stage 6) | Encode the 30,000 titles with MiniLM into `title_embeddings.npz` | 226 s on 4 CPU threads |
+| Once, by hand, offline (stage 7) | Download the 30,000 main photos, outside the repo | about 13 min |
+| Once, by hand, offline (stage 7) | Encode the 29,861 photos with CLIP into `image_embeddings.npz` | about 27 min of encoding |
+| Once, by hand, offline (stage 8) | Build the HNSW index of the 30,000 product vectors into `product_hnsw.faiss` | 63 s on 1 thread |
+| By hand, to measure (stage 8) | The scale test: 1,000,000 made-up vectors, exact search vs HNSW | about 13 min, 2 GB of memory |
+
+## Settings
+
+Everything that can change without editing code is a setting: which method the API uses, the weights, the ANN settings, file paths, models and download limits. All of them, with their defaults and what each does, are in [`.env.example`](.env.example); `similarity/config.py` reads them.
+
+| Where a setting comes from | Used when |
+|---|---|
+| 1. An environment variable of the same name | Always wins: `docker run -e`, the Kubernetes ConfigMap, or the terminal |
+| 2. `.env` in the repo root | Local runs. Copy `.env.example` to `.env` and edit it; `.env` is kept out of git. |
+| 3. The default in `similarity/config.py` | When neither sets it (the same values as `.env.example`) |
+
+Settings are read when Python starts, so restart the API, or rerun the command, after a change. A bad value stops the start with its name, for example `setting SIMILARITY_METHOD='word2vec': choose one of tfidf, minilm, tfidf_image, minilm_image`. The tests ignore `.env` and always run with the defaults.
+
+### All settings and their options
+
+**What "after a change" means:**
+- **Restart:** restart the API, or rerun the command that uses the setting.
+- **Rebuild the index:** run `python -m similarity.ann build`. Needed only if you use `SEARCH_MODE=ann`; a stale index refuses to load.
+- **Paths** are relative to the folder commands are run from, which is the repo root. `~` is your home folder.
+
+**The API**
+
+| Setting | Default | Options | What it changes | After a change |
+|---|---|---|---|---|
+| `SIMILARITY_METHOD` | `tfidf` | `tfidf`, `minilm`, `tfidf_image`, `minilm_image` | Which score the API ranks by (stages 3, 6, 7) | Restart |
+| `SEARCH_MODE` | `exact` | `exact`, `ann` | Score every product, or an HNSW shortlist then the same score (stage 8) | Restart |
+| `MAX_SIMILAR` | `100` | A whole number, 1 or more | The largest `num_similar` a caller may ask for, and how many results are cached per product | Restart |
+| `CACHE_SIZE` | `1024` | A whole number, 0 or more (0 turns the cache off) | How many products' results the API keeps in memory | Restart |
+
+**The score**
+
+Weights are any number of 0 or more. They need not add up to 1, since a pair is judged only on the attributes both products have, and 0 leaves that attribute out.
+
+| Setting | Default | What it weighs | After a change |
+|---|---|---|---|
+| `WEIGHT_TEXT` | `0.30` | The title (TF-IDF, or MiniLM in the `minilm` methods) | Restart; rebuild the index |
+| `WEIGHT_CATEGORY` | `0.20` | Same child category (browsenode when there is none) | Restart; rebuild the index |
+| `WEIGHT_GENDER` | `0.10` | Same gender | Restart; rebuild the index |
+| `WEIGHT_PRICE` | `0.15` | Smaller price ÷ larger price | Restart; rebuild the index |
+| `WEIGHT_BRAND` | `0.15` | Same brand | Restart; rebuild the index |
+| `WEIGHT_COLOUR` | `0.05` | Colours in common ÷ colours of either | Restart |
+| `WEIGHT_WEIGHT` | `0.05` | Smaller weight (grams) ÷ larger | Restart |
+| `WEIGHT_IMAGE` | `0.20` | The photo, added on top; used only by `tfidf_image` and `minilm_image` | Restart |
+
+| Setting | Default | Options | What it changes | After a change |
+|---|---|---|---|---|
+| `SCORE_DECIMALS` | `3` | A whole number, 0 or more | Scores equal to this many decimals count as a tie, and the higher rating goes first | Restart |
+
+**ANN search** (only used when `SEARCH_MODE=ann`)
+
+| Setting | Default | Options | What it changes | After a change |
+|---|---|---|---|---|
+| `ANN_CANDIDATES` | `1000` | A whole number, 10 or more. Measured recall@10 against exact search: 100 → 88%, 250 → 93%, 500 → 96%, 1,000 → 97%, 2,000 → 98% | How many products HNSW shortlists for the full score. More is closer to exact search, but slower. | Restart |
+| `ANN_M` | `64` | A whole number, 2 or more. Tried: 32 (41 products unreachable), 64, 128 | Links per product in the graph. More means fewer unreachable products, but a bigger index and a slower build. | Rebuild the index |
+| `ANN_EF_CONSTRUCTION` | `500` | A whole number, 1 or more. Tried: 200, 500 | How many candidates are weighed when a product is linked in. Larger gives a better graph but a slower build. | Rebuild the index |
+
+**Files**
+
+| Setting | Default | Options | What it is | After a change |
+|---|---|---|---|---|
+| `RAW_DATA_PATH` | `data/archive/marketing_sample_for_amazon_com-…_30k_data.ldjson` | Any file path | The raw file stage 1 reads | `python -m similarity.preprocessing` |
+| `PRODUCTS_PATH` | `data/processed/products.parquet` | Any file path | The clean table: written by stage 1, read by everything else | `python -m similarity.preprocessing` |
+| `TITLE_EMBEDDINGS_PATH` | `data/processed/title_embeddings.npz` | Any file path | The title numbers of stage 6 | `python -m similarity.embeddings` |
+| `IMAGE_EMBEDDINGS_PATH` | `data/processed/image_embeddings.npz` | Any file path | The photo numbers of stage 7 | `python -m similarity.images embed` |
+| `ANN_INDEX_PATH` | `data/processed/product_hnsw.faiss` | Any file path | The HNSW index of stage 8 | Rebuild the index |
+| `IMAGE_DIR` | `~/Downloads/Amazon Image Download` | Any folder | Where stage 7 keeps the photos, outside the repo | `python -m similarity.images download` |
+
+**The offline steps** (stages 6 and 7)
+
+| Setting | Default | Options | What it changes | After a change |
+|---|---|---|---|---|
+| `TITLE_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Any sentence-transformers model on Hugging Face, for example `sentence-transformers/all-mpnet-base-v2` (768 numbers, about 5 times slower) | The model that turns titles into numbers | `python -m similarity.embeddings`, then rebuild the index |
+| `IMAGE_MODEL` | `sentence-transformers/clip-ViT-B-32` | A CLIP model in sentence-transformers: `clip-ViT-B-32`, `clip-ViT-B-16`, `clip-ViT-L-14` (each larger and slower) | The model that turns photos into numbers | `python -m similarity.images embed` |
+| `ENCODE_THREADS` | `4` | A whole number from 1 to the CPU's thread count (16 on this laptop) | CPU threads for encoding titles | The next encoding |
+| `DOWNLOAD_WORKERS` | `8` | A whole number, 1 or more; keep it low to be polite to the server | Photos downloaded at the same time | The next download |
+| `DOWNLOAD_TIMEOUT` | `10` | Seconds, 1 or more | How long to wait for each photo | The next download |
+
+**Switching the API's method** takes two settings. They match the two separate questions of stages 3 to 8: how a product is scored, and how the products to score are found.
+
+| Setting | Values | Default |
+|---|---|---|
+| `SIMILARITY_METHOD` | `tfidf`, `minilm`, `tfidf_image`, `minilm_image`: which score | `tfidf` |
+| `SEARCH_MODE` | `exact` (score every product) or `ann` (an HNSW shortlist, then the same score on it) | `exact` |
+
+| Choice | Also needs |
+|---|---|
+| `tfidf` | Nothing: the Docker image has it all |
+| `minilm` | `data/processed/title_embeddings.npz` (`python -m similarity.embeddings`) |
+| `tfidf_image`, `minilm_image` | `data/processed/image_embeddings.npz` (`python -m similarity.images embed`), plus the title file for `minilm_image` |
+| `SEARCH_MODE=ann` | faiss-cpu, the title file and `data/processed/product_hnsw.faiss` (`python -m similarity.ann build`) |
+
+At startup the API runs one search, so a missing file stops it straight away, with the command that makes the file, instead of failing on every request. `/health` reports the method in use: `{"status": "ok", "products": 30000, "method": "tfidf", "search": "exact"}`.
+
+- **Locally:** edit `.env` and restart `uvicorn app:app`.
+- **Docker:** `docker run --env-file .env -p 8000:8000 product-similarity`. The image holds only what `tfidf` with exact search needs.
+- **Kubernetes:** edit `k8s/configmap.yaml`, then `kubectl apply -f k8s/configmap.yaml` and `kubectl rollout restart deployment/product-similarity`. If the image lacks what the new method needs, the new pods stop at startup and never become ready, and the old pods keep serving.
+
+**Weights and the ANN index.** The ANN index is built from the weights. After changing a weight, rebuild it (`python -m similarity.ann build`); a stale index refuses to load.
+
+**What stays in code:** the rules that describe the data, such as colour spellings, the weight sentinel and the brand placeholders. They are facts found in the data, not choices to tune.
 
 ---
 
 ## Stage 0: EDA
 
-`eda.ipynb` is the raw pass and reproduces every number in this section. `eda_learning.ipynb` covers the original cells with a note on each; it does not have the later cells for duplicates, reviews, weight errors and offer fields. The only charts, two price histograms, are drawn in `eda.ipynb`.
+`notebooks/eda.ipynb` reproduces every number in this section. The only charts, two price histograms, are drawn in `notebooks/eda.ipynb`.
 
 ### Key findings
 
@@ -114,13 +219,13 @@ When each part runs:
 
 ### Price
 
-`sales_price` loads as a number for 27,110 rows (90.4%). Nothing is zero or negative. `eda.ipynb` draws a histogram of the price and one of its log10, which shows the skew.
+`sales_price` loads as a number for 27,110 rows (90.4%). Nothing is zero or negative. `notebooks/eda.ipynb` draws a histogram of the price and one of its log10, which shows the skew.
 
 | Min | 5th pct | 25th pct | Median | 75th pct | 95th pct | 99th pct | Max |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | ₹39 | ₹219 | ₹379 | ₹590 | ₹899 | ₹2,877 | ₹5,220 | ₹9,988 |
 
-There is no separate `price` column, even though the README lists both "price" and "sales_price".
+There is no separate `price` column, even though the problem statement lists both "price" and "sales_price".
 
 ### Rating and reviews
 
@@ -175,7 +280,7 @@ Where the column is filled, the details text usually reads *"Be the first to rev
 - Largest brands: Max (504), Generic (245), BIBA (205), Mothercare (156), Campus Sutra (150). `Generic` (245) and `N/A` (4) are placeholders.
 - The seller is not the brand: `seller_name` matches `brand` on only 1,582 rows.
 - Every non-empty `colour` lists at least two colours, e.g. `Black|White` (79). Raw string matching almost never hits, so colours are compared as sets.
-- 8,087 more rows have no `colour` but a colour word in `product_name` (35-word list in `eda.ipynb`). A vocabulary built from the `colour` column does not work: it picks up junk such as `as`, `april` and `b`.
+- 8,087 more rows have no `colour` but a colour word in `product_name` (35-word list in `notebooks/eda.ipynb`). A vocabulary built from the `colour` column does not work: it picks up junk such as `as`, `april` and `b`.
 
 ### Category
 
@@ -226,7 +331,7 @@ These fields are candidates for filters or business re-ranking ("Prime only"), n
 | | |
 |---|---|
 | Module | `similarity/preprocessing.py` |
-| Notebook | `01_preprocessing.ipynb` |
+| Notebook | `notebooks/01_preprocessing.ipynb` |
 | Tests | `tests/test_preprocessing.py` (41 tests) |
 | Run | `python -m similarity.preprocessing` (about 3 s) |
 | Output | `data/processed/products.parquet`: 30,000 rows, 13 columns, 3.3 MB |
@@ -297,7 +402,7 @@ unknown review count → 4.18
 | | |
 |---|---|
 | Module | `similarity/features.py` |
-| Notebook | `02_features.ipynb` |
+| Notebook | `notebooks/02_features.ipynb` |
 | Tests | `tests/test_features.py` (20 tests) |
 | Run | `python -m similarity.features` (about 0.6 s) |
 | Output | A `Features` object in memory; row *i* of every array is product *i* |
@@ -365,7 +470,7 @@ Text alone ranks the casual shirt (C) above the other T-shirt (B), because A and
 | | |
 |---|---|
 | Module | `similarity/search.py` |
-| Notebook | `03_search.ipynb` |
+| Notebook | `notebooks/03_search.ipynb` |
 | Tests | `tests/test_search.py` (14 tests; 75 across all stages) |
 | Run | `python -m similarity.search <uniq_id> [num_similar]` |
 | Output | `find_similar_products(product_id, num_similar=10) -> list[str]`, about 22 ms per query |
@@ -444,7 +549,7 @@ score = Σ weight × similarity   over the attributes both products have
         Σ weight                 over the same attributes
 ```
 
-A missing attribute is left out for that pair and the remaining weights are rescaled, so the score stays between 0 and 1. This is Gower's similarity coefficient (J. C. Gower, "A general coefficient of similarity and some of its properties", *Biometrics* 27(4), 1971), built for records that mix text-like, categorical and numeric attributes with gaps. It is also the README's "fallback mechanism when certain features are unavailable", and stage 8 images will use it too.
+A missing attribute is left out for that pair and the remaining weights are rescaled, so the score stays between 0 and 1. This is Gower's similarity coefficient (J. C. Gower, "A general coefficient of similarity and some of its properties", *Biometrics* 27(4), 1971), built for records that mix text-like, categorical and numeric attributes with gaps. It is also the problem statement's "fallback mechanism when certain features are unavailable", and stage 7 uses it for products without a photo.
 
 Missing data is the normal case, not the exception:
 
@@ -521,7 +626,7 @@ Checks without labels, averaged over the top 10 of 500 random products (`result_
 | Ratio for price and weight | No unit, and treats ₹100 vs ₹200 like ₹1,000 vs ₹2,000 | Generous: ₹200 vs ₹250 still scores 0.8 |
 | Scores rounded to 3 decimals before the tie-break | Differences below 0.001 are noise; the rating then decides | Rounding hides very small real differences |
 | One row per ASIN in results | The same product never fills two slots | The other row is not shown; twins differ at most in price or offer |
-| Exact search over every product | 22 ms per query at 30,000 products; the exact answer that stage 7's ANN index is measured against | Time grows with catalogue size |
+| Exact search over every product | 22 ms per query at 30,000 products; the exact answer that stage 8's ANN index is measured against | Time grows with catalogue size |
 
 ### Open issues
 
@@ -538,8 +643,8 @@ Checks without labels, averaged over the top 10 of 500 random products (`result_
 
 | | |
 |---|---|
-| Module | `app.py` at the repo root, as in the README's sample |
-| Notebook | `04_api.ipynb` |
+| Module | `app.py` at the repo root, as in the problem statement's sample |
+| Notebook | `notebooks/04_api.ipynb` |
 | Tests | `tests/test_app.py` (13 tests; 88 across all stages) |
 | Run locally | `uvicorn app:app --port 8000`, then open `http://localhost:8000/docs` |
 | Run in Docker | `docker build -t product-similarity .`, then `docker run --rm -p 8000:8000 product-similarity` |
@@ -556,7 +661,7 @@ Checks without labels, averaged over the top 10 of 500 random products (`result_
 
 ### Requests and answers
 
-From `04_api.ipynb`, for A ("People Men's Printed Regular fit T-Shirt", the stage 3 example):
+From `notebooks/04_api.ipynb`, for A ("People Men's Printed Regular fit T-Shirt", the stage 3 example):
 
 | Request | Status | Body |
 |---|---|---|
@@ -588,7 +693,7 @@ uvicorn and FastAPI talk through ASGI, a standard interface between Python web s
 
 - **Why always 100.** The cost of a search is scoring all 30,000 products, and that is the same whether 5 or 100 are kept. Keeping 100 lets `num_similar=3` and `num_similar=10` share one entry, and the 3 are always the first 3 of the 10.
 - **Size.** At most 1,024 products, about 8 MB. When full, the product asked for least recently is dropped (LRU: least recently used).
-- **Effect.** 200 random products in `04_api.ipynb`: 29.7 ms per request the first time, 5.6 ms the second. Over real HTTP: 38 ms and 2 ms.
+- **Effect.** 200 random products in `notebooks/04_api.ipynb`: 29.7 ms per request the first time, 5.6 ms the second. Over real HTTP: 38 ms and 2 ms.
 - **No expiry needed.** The data is fixed inside the image. New data means a new image, which starts with an empty cache.
 - **One cache per running copy.** With two containers, each keeps its own. That costs at most one extra 22 ms search per product per copy.
 
@@ -618,7 +723,7 @@ stage 1 "build" (python:3.10-slim)                stage 2, the image that runs (
 
 **Publishing the port.** `EXPOSE 8000` only records which port the app uses; it opens nothing. `-p 8000:8000` in `docker run` is what connects the laptop's port 8000 to the container's. Starting the image from Docker Desktop's **Run** button with the optional "Host port" box empty gives a container that is running and healthy but that the browser cannot reach: `docker ps` then shows `8000/tcp` instead of `0.0.0.0:8000->8000/tcp`.
 
-`requirements.txt` now holds only what the image runs: fastapi, uvicorn, numpy, pandas, scikit-learn, pyarrow. `requirements-dev.txt` adds pytest, httpx (for FastAPI's test client) and matplotlib. torch, torchvision and pillow were removed: nothing imports them yet, and they would add over 1 GB to the image. Stage 8 decides where they belong.
+`requirements.txt` now holds only what the image runs: fastapi, uvicorn, numpy, pandas, scikit-learn, pyarrow. `requirements-dev.txt` adds pytest, httpx (for FastAPI's test client) and matplotlib. torch, torchvision and pillow were removed: nothing imports them yet, and they would add over 1 GB to the image. Stages 6 and 7 later added `sentence-transformers` (which brings torch) and pillow to `requirements-dev.txt` only: they build the embeddings offline, and search only reads the saved numbers.
 
 ### What is inside the image
 
@@ -658,8 +763,8 @@ Measured with `docker history` (one line per Dockerfile step) and `du` inside a 
 
 | Decision | Why | Cost |
 |---|---|---|
-| `app.py` at the repo root | Matches the README's sample and its `uvicorn app:app` | One module outside `similarity/`; it holds only the web layer |
-| Return a plain list of IDs | The README's signature is `-> List[str]` | No scores or names in the answer; adding them later changes the format |
+| `app.py` at the repo root | Matches the problem statement's sample and its `uvicorn app:app` | One module outside `similarity/`; it holds only the web layer |
+| Return a plain list of IDs | The problem statement's signature is `-> List[str]` | No scores or names in the answer; adding them later changes the format |
 | `num_similar` at most 100 | Bounds the work and the size of every answer; no page shows 100 recommendations | A caller wanting more gets 422 |
 | Check for the ID before searching, instead of catching `KeyError` | A `KeyError` caused by a bug inside the search would otherwise be reported as "not found" | — |
 | Plain 500 message | A traceback can reveal code and file paths; it goes to the log instead | The caller learns nothing about the cause |
@@ -670,7 +775,7 @@ Measured with `docker history` (one line per Dockerfile step) and `du` inside a 
 ### Open issues
 
 - **The image could be smaller.** Removing pip, setuptools and the packages' test folders in the build stage would save about 110 MB. Saving the table in a format pandas reads without pyarrow would save about 160 MB more, but Parquet keeps the types and lists (see stage 1). The 206 MB compressed size is downloaded once per machine, so this is not urgent.
-- **Python 3.10 reached end of life in October 2026** and gets no more security fixes. It is kept because the README's sample uses it. Moving to 3.12+ is a one-line change in the Dockerfile and would also allow current releases (pyarrow 26+, NumPy 2.3+).
+- **Python 3.10 reached end of life in October 2026** and gets no more security fixes. It is kept because the problem statement's sample uses it. Moving to 3.12+ is a one-line change in the Dockerfile and would also allow current releases (pyarrow 26+, NumPy 2.3+).
 - **Only direct packages are pinned.** For Python 3.10, pip picks scipy 1.15.3 and starlette 1.7.0. This machine has scipy 1.18.1 and starlette 1.10.0, and the tests ran on those. A lock file (for example from `pip-compile`) would pin all 26.
 - starlette 1.10 warns that its test client will move from `httpx` to `httpx2`. This affects tests only.
 
@@ -793,7 +898,7 @@ kubectl apply -f k8s/                                         # hand the two YAM
 | | |
 |---|---|
 | Code | `evals/shortlist.py` picks the 20 test products and gathers a first shortlist to label. `evals/sweep.py` then searches the whole catalogue for each test product's kind of product. Both were run once. `evals/run_eval.py` scores the methods and rebuilds the workbook. `evals/store.py` reads and writes the data sheets. |
-| Data | Everything is in `evals/eval_results.xlsx`, with no separate files. The **Queries** sheet holds the 20 test products. The **Labels** sheet holds the 3,841 hand labels, with the ground truth and where each candidate came from (`source`: shortlist or sweep). |
+| Data | Everything is in `evals/eval_results.xlsx`, with no separate files. The **Queries** sheet holds the 20 test products. The **Labels** sheet holds the 3,841 labels from the LLM judge, with the ground truth and where each candidate came from (`source`: shortlist or sweep). |
 | Run | `python -m evals.run_eval` rebuilds `evals/eval_results.xlsx` and prints the same numbers (about 10 s). Close the workbook in Excel first. |
 | Tests | `tests/test_evals.py` (7 tests; 95 across all stages) |
 | Notebook | None. The run produces the Excel workbook. |
@@ -801,7 +906,7 @@ kubectl apply -f k8s/                                         # hand the two YAM
 ### Method
 
 1. **Pick 20 test products** (queries). 12 are random (fixed seed): 10 spread over the 8 largest categories, plus 2 from any other category. 8 are hard cases chosen for a known difficulty (table below).
-2. **Round one: a shortlist per test product.** 28 to 46 candidates, 736 in total, from four routes. They were shuffled so the reviewer could not tell which route found which:
+2. **Round one: a shortlist per test product.** 28 to 46 candidates, 736 in total, from four routes. They were shuffled so the judge could not tell which route found which:
 
    | Route | Candidates |
    |---|---|
@@ -815,13 +920,13 @@ kubectl apply -f k8s/                                         # hand the two YAM
    - **Search:** the terms are matched against all 30,000 titles, and every match not already labelled is read: 57 to 209 per test product, 3,105 in total.
    - **Size:** the terms were tightened until each sweep was about 150 to 200 products. Where fewer matched, all were read.
    - **Record:** the exact terms are in `evals/sweep.py`.
-4. **Label by hand.** Every candidate from both rounds is marked good or not good, with one rule (below).
+4. **Label with an LLM as the judge.** The data has no labels, so there is no ground truth to borrow. An LLM judged every candidate from both rounds good or not good, with one rule (below).
 5. **Pick the ground truth:** the 10 most similar good candidates from both rounds, best first.
 6. **Score** the method's top 10 against the labels.
 
 **Why the shortlist routes, and then a sweep:**
 - **Why not just read the current method's results:** nobody can read 30,000 products for each test product, so the answer key has to come from a smaller set. If that set were the current method's own results, the "right answers" would be its own answers, like an answer key copied from the student's paper. It could never be caught missing a better product.
-- **What the shortlist added:** the four routes put products the method misses in front of the reviewer. But the shortlist still only showed what those routes ranked highly. For the blouse fabric, every route leaned on its wrong category (kurtis), so not one fabric was read.
+- **What the shortlist added:** the four routes put products the method misses in front of the judge. But the shortlist still only showed what those routes ranked highly. For the blouse fabric, every route leaned on its wrong category (kurtis), so not one fabric was read.
 - **What the sweep adds:** it reads every product of the right kind. The ground truth becomes the best of everything of that kind, not the best of a shortlist.
 
 | Hard case | Why it is hard |
@@ -898,7 +1003,7 @@ The ground truth now has 200 picks, up from 190: 109 were kept, 81 were replaced
 | Metric | Meaning | Best |
 |---|---|---|
 | **Good results** | Of the method's 10 results, how many are labelled good | 10 of 10 |
-| **Ground truth found** | Of the 10 hand-picked closest products, how many the method also returned | 10 of 10 |
+| **Ground truth found** | Of the judge's 10 closest products (the reference picks), how many the method also returned | 10 of 10 |
 | **First good result** | The rank of the first good result ("none" counts as 11 in the average) | 1 |
 
 A result nobody has labelled is shown as **not labelled**, and the run prints a warning.
@@ -959,9 +1064,9 @@ Current method (stage 3: TF-IDF title + other attributes):
 
 ### Ranking metrics: one score row per method
 
-The **Methods** sheet gives every method in `evals/run_eval.py` one row with standard ranking metrics, so methods can be compared side by side. Each test product's 10 hand picks are the right answers, and every metric is averaged over the 20 test products:
+The **Methods** sheet gives every method in `evals/run_eval.py` one row with standard ranking metrics, so methods can be compared side by side. Each test product's 10 reference picks are the right answers, and every metric is averaged over the 20 test products:
 
-| Metric | Meaning | Current method |
+| Metric | Meaning | `tfidf` |
 |---|---|---:|
 | **Recall@5** | Share of the 10 picks in the top 5 (at most 50%, since 5 slots cannot hold 10) | 24% |
 | **Recall@10** | Share of the 10 picks in the top 10 | 32% |
@@ -973,58 +1078,486 @@ Precision@5, hit rate and nDCG were tried and dropped to keep the table short. W
 
 **In short:** the first result is usually one of the closest products (MRR 0.82), but only about a third of the closest 10 make it into the top 10 (Recall@10 32%).
 
-The metrics against the hand picks need no new labelling, so any new method gets them immediately. Only Good@10 needs its results labelled first. The numbers are computed by the script (`ranking_metrics` in `evals/run_eval.py`, tested against a hand-worked example) and written as values. Hovering over a column header shows its meaning.
+The metrics against the reference picks need no new labelling, so any new method gets them immediately. Only Good@10 needs its results labelled first. The numbers are computed by the script (`ranking_metrics` in `evals/run_eval.py`, tested against a hand-worked example) and written as values. Hovering over a column header shows its meaning.
 
 ### How to read the workbook
 
 - **Methods:** one row per method with the ranking metrics above.
-- **Summary:** one row per test product with good results, ground truth found and first good result for the current method, then the overall numbers. These are Excel formulas over Details.
+- **Summary:** one row per test product with good results, ground truth found and first good result for `tfidf` (and the `--alternative` method, if one is given), then the overall numbers. These are Excel formulas over Details.
 - **Details:** 10 rows per test product. The ground truth sits beside the method's top 10, and each result is marked Good? and In ground truth? (green / red).
 - **Queries, Labels:** the data. The yellow cells (`good`, `gt_rank`) are the ones to edit. A change made there is kept the next time `python -m evals.run_eval` runs.
 - **Good** means a shopper would accept it as a similar alternative: same kind of product, same audience, similar style, price within about 3x.
 
 Excel recalculated all 86 formulas with no errors, and every value matched the script's own Python calculation.
 
-**Adding a method** (for example sentence embeddings in stage 6):
-1. Add it to `METHODS` in `evals/run_eval.py`.
-2. Run `python -m evals.run_eval`. It gets a row on the Methods sheet. Add `--alternative <name>` to also show its results beside the current method in Summary and Details.
+**Adding a method** (as stage 6 did for `minilm`):
+1. Add it to `METHODS` in `evals/run_eval.py`: a description, a score and a search mode, the same two choices as the API's settings `SIMILARITY_METHOD` and `SEARCH_MODE`. A new score is a set of weights, added to `METHOD_WEIGHTS` in `similarity/search.py` and to `SIMILARITY_METHODS` in `similarity/config.py`.
+2. Run `python -m evals.run_eval`. It gets a row on the Methods sheet. Add `--alternative <name>` to also show its results beside `tfidf` in Summary and Details. A method whose files are missing is skipped with a message.
 3. Its results that were never labelled are added to the Labels sheet with an empty `good` cell, and the run warns about them. Fill in yes / no and run again; until then only Good@10 is incomplete.
 
 ### Decisions and trade-offs
 
 | Decision | Why | Cost |
 |---|---|---|
-| Hand-labelled once, in this session, instead of an LLM API judge | No API key or cost, and simpler. The labels are saved, so every method is scored on identical ground. | One annotator, and an AI. Worth spot-checking a few test products. |
+| An LLM as the judge, run once in this session rather than through an API | The data has no labels. No API key or cost, and simpler. The labels are saved, so every method is scored on identical ground. | One judge, and an LLM, not a shopper. Worth having a person spot-check a few test products. |
 | Shortlist from four routes, then a full-catalogue sweep | The sweep removes the dependence on what the routes rank highly. Its terms come from each product's own title, not from any method. | The terms are judgement. A matching product that uses none of the words is still missed. |
 | Sweep tightened to about 150–200 products per test product | For common kinds (kurtas, sarees) hundreds of products are near-equal, so reading 1,400 would mostly reorder equals | The ground truth is the best of the closest 150–200, not of every product of that kind |
 | Good/not good for every candidate, plus a ranked top 10 | A strict ID match alone would punish equally good near-copies | Two numbers to read instead of one |
 | Price only as a 3x limit | Keeps "good" about what the product is | Price closeness is barely tested |
 | Unlabelled results shown as "not labelled", with a warning | A new method's unseen results are neither right nor wrong until labelled | They must be labelled before its numbers are final |
 | All data in the workbook, no separate files | One file to open, share and edit. The Labels sheet is read back on every run, so edits made in Excel are kept. | The labels live in a binary file: git cannot show which label changed. Excel must be closed while the script runs. |
-| Ranking metrics against the hand picks, in their own sheet | Standard numbers (recall, MRR) that score any method straight away, with no new labelling; plus Good@10 and latency | Near-copies keep recall low even for a good method, so Good@10 is reported next to it |
+| Ranking metrics against the reference picks, in their own sheet | Standard numbers (recall, MRR) that score any method straight away, with no new labelling; plus Good@10 and latency | Near-copies keep recall low even for a good method, so Good@10 is reported next to it |
 | Methods metrics as values; Summary as formulas | The Methods sheet scores every registered method, including ones not shown in Details, so it cannot be formulas over Details | Editing a label in Excel updates Summary immediately, but Methods only after a rerun |
 | Own folder `evals/`, no notebook | Evaluation stays apart from the service; one command produces the workbook | — |
 
 ### Open issues
 
-- **One annotator,** labelling from text, not photos. The uncertain calls are listed above, under what counts as good, and can be corrected on the Labels sheet.
-- **Good results is near its ceiling** for the current method. Stage 6 improvements will show mainly in ground truth found and on the hard test products. With 20 test products, only large differences are meaningful.
+- **One judge, an LLM,** labelling from text, not photos. The uncertain calls are listed above, under what counts as good, and can be corrected on the Labels sheet.
+- **Good results is near its ceiling** for the current method (`tfidf`). Stage 6 improvements will show mainly in ground truth found and on the hard test products. With 20 test products, only large differences are meaningful.
 - **The sweep's T-shirt pattern also matched "fit Shirt".** Some collared shirts were read (and labelled not good), and a few "...fit Shirt" titles were left out of the Q06 and Q08 sweeps. `evals/sweep.py` keeps the pattern as run, with a note.
-- **Every result from the current method is labelled,** because its top 15 was one of the shortlist routes. Another method's results may need labelling first.
+- **Every result from the current method is labelled,** because its top 15 was one of the shortlist routes. Another method's results may need labelling first (stage 6 labelled 46 for `minilm`).
+- **The current method is called `tfidf`** from stage 6 on, so the four methods have matching names.
 
-## Upcoming stages
+## Stage 6: Title embeddings
 
-Four methods, each a row on the Methods sheet. They share the stage 3 search and differ only in their weights:
+| | |
+|---|---|
+| Module | `similarity/embeddings.py` (encode, save, load, rescale); the `text_embedding` score in `similarity/search.py` |
+| Notebook | `notebooks/06_text_embeddings.ipynb` |
+| Run once | `python -m similarity.embeddings`: 226 s on this laptop, capped at 4 CPU threads |
+| Output | `data/processed/title_embeddings.npz`: 30,000 × 384 numbers (50 MB), with the uniq_ids and the random-pair score |
+| Method | `minilm` on the Methods sheet |
+| New dependency | `sentence-transformers==6.3.0` (brings torch), in `requirements-dev.txt` only |
 
-| Attribute | `tfidf` (current) | `minilm` | `tfidf_image` | `minilm_image` |
+Four methods are compared, each a row on the Methods sheet. They share the stage 3 search and differ only in their weights. This stage adds `minilm`; stage 7 adds the two photo methods.
+
+| Attribute | `tfidf` (stage 3) | `minilm` | `tfidf_image` | `minilm_image` |
 |---|---|---|---|---|
 | Title, TF-IDF | 0.30 | — | 0.30 | — |
 | Title, all-MiniLM-L6-v2 | — | 0.30 | — | 0.30 |
 | Category, gender, price, brand, colour, weight | 0.20, 0.10, 0.15, 0.15, 0.05, 0.05 | same | same | same |
 | Photo, CLIP ViT-B/32 | — | — | 0.20 | 0.20 |
 
-- **6 Title embeddings**: all-MiniLM-L6-v2 (Reimers & Gurevych, 2019) reads the same product name as TF-IDF and gives each title 384 numbers, so titles with the same meaning but different words (frock / dress) score high. Embedding cosines are rescaled so a typical random pair scores 0: `max(0, (cosine − b) / (1 − b))`, with `b` the median of 10,000 random pairs.
-- **7 Images (optional)**: the main `medium` photo of each product, embedded with CLIP ViT-B/32 (Radford et al., 2021), with the same rescaling. A pair where either product has no photo skips the photo score (the fallback). CLIP is a vision transformer, not the CNN the brief names; it was chosen because it learned from images with captions, while ImageNet CNNs learned 1,000 object classes with almost no clothing.
-  - **The photos are stored outside the repo**, in `C:\Users\aswin\Downloads\Amazon Image Download`. The repo is inside OneDrive, and 30,000 photos would otherwise sync to the cloud. Only the photo numbers (`image_embeddings.npz`) are kept in `data/processed/`.
-  - **The download is standalone.** Only `python -m similarity.images download` fetches photos. Preprocessing, the Docker build, the API and the evaluation never do.
-- **8 ANN index (bonus)**: HNSW (Malkov & Yashunin, 2016), measured by recall@k against stage 3.
+### Method
+
+1. **Encode once.** The pretrained model all-MiniLM-L6-v2 (Reimers & Gurevych, 2019; 23M parameters, downloaded once, about 90 MB) reads each product name as it is: the same text TF-IDF reads. It outputs 384 numbers per title, scaled to length 1. Nothing is trained. The name is the only descriptive text in the data: `meta_keywords` repeats it and `product_details` holds dates and ranks.
+2. **Score.** At search time the title score is the query's numbers times every product's numbers (the cosine), rescaled as below. One multiplication over a 30,000 × 384 table.
+3. **Combine.** It takes the TF-IDF title score's place at the same weight (0.30). Every other attribute and weight stays (`method_weights("minilm")` in `search.py`).
+4. **Load only when used.** The numbers are read the first time a method uses them. The API's method (`tfidf`) never reads the file, so the Docker image needs neither the file nor torch.
+
+### How it differs from TF-IDF
+
+| | TF-IDF | MiniLM |
+|---|---|---|
+| Numbers per title | 7,412 word slots, about 8 filled | 384, all filled |
+| Knowledge from | Counting words in our 30,000 titles | Pretraining on about 1 billion sentence pairs |
+| Scores high when two titles… | Share words | Mean similar things |
+
+Pairs scored by both (notebook):
+
+| Title a | Title b | TF-IDF | MiniLM (rescaled) |
+|---|---|---:|---:|
+| Girls cotton frock | Girls cotton dress | 0.49 | 0.54 |
+| Women's straight kurta | Women's straight kurti | 0.59 | 0.92 |
+| Girls cotton frok | Girls cotton frock | 0.27 | 0.84 |
+| Men's cotton T-shirt | Men's cotton tee | 0.36 | 0.72 |
+| Woolen beanie | Winter knit cap | 0.00 | 0.12 |
+| Girls cotton frock | Men's leather wallet | 0.00 | 0.00 |
+
+With the title alone, TF-IDF's nearest titles to the Zadmus baby frock (Q14) are other Zadmus products, including boys' T-shirts. MiniLM's are frocks from other brands.
+
+### Rescaling
+
+Embedding cosines are rarely 0: two unrelated titles still share a language. Over 5,000 random pairs, the raw MiniLM score is above 0 for 99.8% of them, with a median of 0.31; TF-IDF is 0 for 63%. Left as is, every product would get a free title score of about 0.3. So each score is rescaled:
+
+```
+score = max(0, (cosine − b) / (1 − b))     b = 0.309, the median of 10,000 random pairs
+```
+
+A typical random pair then scores 0 and an identical title 1, the same shape as TF-IDF. After rescaling, 49% of random pairs score above 0. Stage 7 uses the same rescaling for photos.
+
+### Labelling the new results
+
+46 of `minilm`'s top-10 results had never been labelled. They were labelled with the stage 5 rules: 34 good, 12 not good.
+
+Calls already made in stage 5 were applied unchanged:
+- stitched kurtas are not fabric (Q13);
+- a romper is not a frock;
+- caps and snapbacks are not beanies;
+- anarkali kurtas are not dresses;
+- a tactical cap is not a newsboy cap.
+
+Three calls were new:
+- a plain adult beanie counts for the Marvel logo beanie;
+- an animal-print boys' T-shirt counts for the character T-shirt;
+- a woollen girls' frock counts as a frock.
+
+The reference picks (ground truth) were not changed. Re-picking them after seeing a method's results would favour that method.
+
+### Results
+
+| Method | Recall@5 | Recall@10 | MRR@10 | Good@10 | ms per query |
+|---|---:|---:|---:|---:|---:|
+| `tfidf` | 24% | 32% | 0.82 | 90% | 26 |
+| `minilm` | 24% | 31% | 0.71 | 88% | 24 |
+
+Where they differ (reference picks found in the top 10, and good results, out of 10). The other 11 score the same; Q08 differs only in where its first pick lands.
+
+| Test product | `tfidf` found / good | `minilm` found / good | Why |
+|---|---|---|---|
+| Q12 Jockey cotton brief, pack of 3 | 3 / 10 | **6** / 9 | Finds other brands' cotton briefs by meaning |
+| Q13 Kalamkari blouse fabric | 1 / 1 | **2 / 2** | A second Kalamkari fabric now ranks 2nd |
+| Q14 Baby girls' frock | 3 / 8 | **4** / 7 | Frocks from other brands |
+| Q03 Plain regular-fit tee, Q10 A-line dress | 4, 5 | **5, 6** | One more pick each |
+| Q18 "Pari Singh Orange Plain Women's Frok" | 3 / 10 | **0 / 8** | The title's meaning leans to ethnic wear, so anarkali kurtas come first. TF-IDF fell back on the category and found dresses. |
+| Q16 Marvel Avengers logo beanie | 3 / 10 | **1 / 8** | "Marvel Avengers" outweighs "beanie", so Marvel caps rank high. TF-IDF weighs the rare word "beanie". |
+| Q19 "OOMPH!" | 6 / 10 | **4** / 10 | A one-word brand title carries little meaning |
+| Q04 Plain slim-fit tee | 5 / 10 | **3** / 10 | "Slim fit" and "regular fit" mean nearly the same to the model |
+
+### Findings
+
+- **MiniLM ties TF-IDF overall.** Recall and Good@10 are within one or two points, which is noise with 20 test products. MRR is lower (0.71 vs 0.82), because the first reference pick lands later on Q04, Q08, Q16 and Q18.
+- **It helps where words differ but the meaning matches** (briefs, fabric, frocks from other brands) and **hurts where one exact word decides the product** (beanie, slim fit) or the title is mostly a brand.
+- **The titles suit TF-IDF.** They are short (9 words on average) and keyword-like, and the other attributes carry 70% of the weight, so the title score moves the ranking less than it would alone.
+- **Q11 (newsboy cap) and Q17 (toddler tee) still find no picks** with either title score.
+- **Speed is the same:** both take about 25 ms per search (timings vary by about ±10 ms between runs on this laptop).
+- **Not tried:** using both title scores together, TF-IDF for exact words and MiniLM for meaning.
+
+### Decisions and trade-offs
+
+| Decision | Why | Cost |
+|---|---|---|
+| all-MiniLM-L6-v2 | The standard small sentence transformer; fast on a CPU | Newer models (for example bge-small) score higher on public benchmarks; untested here |
+| Same input as TF-IDF, the product name | Only the way the title becomes numbers changes, so the comparison is fair | — |
+| Same weight as TF-IDF (0.30) | Only the title score changes | The best weight for MiniLM is untested |
+| Rescale by the random-pair median | A typical random pair scores 0, like TF-IDF | About half of all products get a small positive title score |
+| Encoded once, read on first use | The API needs no model or torch; a method that does not use the numbers never reads them | The file must be rebuilt when the products change (loading checks the uniq_ids and refuses a mismatch) |
+| Encoding capped at 4 CPU threads | Keeps the load moderate on this laptop | Slower encoding (226 s) |
+| Reference picks not re-picked | Avoids favouring the method just seen | The picks were made from text; fair for a text method, less so for photos (stage 7) |
+
+### Open issues
+
+- **20 test products** separate only large differences; most of the gaps above are one or two products.
+- **One judge, an LLM,** labelling from text, as in stage 5.
+- **Indian terms:** the model learned mostly from Western English text. It links kurta and kurti (0.92), but rare terms ("gota patti", brand names) carry little meaning for it.
+
+## Stage 7: Image similarity (optional)
+
+| | |
+|---|---|
+| Module | `similarity/images.py` (download, embed); the `image` score in `similarity/search.py` |
+| Notebook | `notebooks/07_image_similarity.ipynb` |
+| Run once, by hand | `python -m similarity.images download`, then `python -m similarity.images embed` |
+| Photos | 29,861 of 30,000 (345 MB), **outside the repo** in `C:\Users\aswin\Downloads\Amazon Image Download` |
+| Output | `data/processed/image_embeddings.npz` (65 MB): 512 numbers per photo, which products have a photo, and the random-pair score |
+| Methods | `tfidf_image`, `minilm_image` on the Methods sheet |
+| Dependency | pillow, plus `sentence-transformers` from stage 6, in `requirements-dev.txt` only |
+
+**Standalone.** Nothing else runs these steps. Preprocessing, the Docker build, the API and the evaluation never download or encode a photo; the photo methods only read `image_embeddings.npz`, and the evaluation skips them with a message when it is missing.
+
+**Outside the repo.** The repo sits in OneDrive, and 30,000 photos would sync to the cloud. The folder is the setting `IMAGE_DIR` (default: `Downloads/Amazon Image Download` in the home folder), and `--image-dir` changes it for one run.
+
+### Method
+
+1. **Which photo.** The first link in `medium`, the product's main photo at about 500 px tall. `small` is a 38 × 50 thumbnail, too small to show a print. `large` is a zoom version of up to 1,500 px: five times the download for nothing at the size the model looks at, and missing for 1,159 products.
+2. **Download.** Eight at a time, with a 10 s timeout, two retries and a generic user agent. It would stop if the server refused 50 requests in a row; that never happened. Each photo is padded to a white square, so a tall photo is not cropped, then shrunk to 224 × 224 and saved as `<uniq_id>.jpg`. A photo already saved is skipped, so a stopped download carries on where it stopped.
+3. **Encode.** CLIP ViT-B/32 (Radford et al., 2021), through sentence-transformers, turns each photo into 512 numbers, scaled to length 1. Nothing is trained. Work is saved every 1,000 photos, so a stopped run loses at most one chunk.
+4. **Score.** The cosine of two photos' numbers, rescaled as in stage 6 with b = 0.661.
+5. **Combine.** The photo is added on top of the other weights at 0.20. Weights are relative: with a photo, the title's share drops from 30% to 25% and the photo's is 17%.
+6. **Fallback.** When either product has no photo, the photo score is skipped for that pair, like any missing attribute (Gower). A product without a photo therefore ranks exactly as under the text-only method: the notebook shows the same top 10, and a test checks it.
+
+**Why CLIP, not a CNN.** The brief suggests a pretrained CNN (ResNet, EfficientNet). CLIP is a vision transformer. It was chosen for what it learned from, not its architecture: 400 million images with captions, many of them shopping-style, against ImageNet's 1,000 object classes with almost no clothing (no saree, kurta or frock). CLIP also runs through the same library as stage 6.
+
+### Photos
+
+| | Count |
+|---|---:|
+| Downloaded | 29,861 |
+| Link no longer exists (HTTP 404) | 137 |
+| No link in the data | 2 |
+| **Without a photo** | **139** |
+
+The download took about 13 minutes over four runs. The laptop switched off three times during it, and also when idle, so the download was not the cause. Each run carried on where the last stopped, and every saved photo was checked to open. Encoding took 26 minutes for the first 29,000 photos; the last 861 took 25 more, most likely while the laptop slept.
+
+**No placeholder pictures.** An "image not available" picture shared by many products would make them all match each other. The largest group of identical photos is 6: one vest in several sizes. 564 photos are shared by 2 to 6 products, each the same item listed more than once.
+
+### Rescaling
+
+Two product photos always look somewhat alike: clothes, centred, on a plain background. Over 5,000 random pairs the raw cosine is never below 0.36, with a median of 0.66. Rescaled with b = 0.661, the median pair scores 0 and the 90th percentile 0.39.
+
+### Labelling the new results
+
+44 results of the photo methods had never been labelled. They were labelled **while looking at the photos**: one contact sheet per test product showing its photo and each result. 39 are good and 5 not good:
+- Q11 (newsboy cap): a baseball cap, a sun hat and a fedora.
+- Q16 (beanie): a trucker cap.
+- Q17 (toddler T-shirt): a Monte Carlo "T-shirt" whose photo shows a sweatshirt.
+
+The reference picks were not changed.
+
+### Results
+
+| Method | Recall@5 | Recall@10 | MRR@10 | Good@10 | ms per query |
+|---|---:|---:|---:|---:|---:|
+| `tfidf` | 24% | 32% | **0.82** | 90% | 42 |
+| `minilm` | 24% | 31% | 0.71 | 88% | 40 |
+| `tfidf_image` | 23% | 31% | 0.73 | 89% | 43 |
+| `minilm_image` | 22% | 30% | 0.71 | 90% | 43 |
+
+The timings come from one run in which the laptop was slower than during stage 6 (the same `tfidf` search took 26 ms there). The photo adds about 2 to 3 ms: one more multiplication, over a 30,000 × 512 table.
+
+Where the photo changes the result, compared with the same method without it (reference picks found / good results, out of 10):
+
+| Test product | Without photo | With photo | What happened |
+|---|---|---|---|
+| Q20 Captain America by Kidsville boys' tee | 3 / 10 (`tfidf`) | **5** / 9 | Other Kidsville character tees (Iron Man) look alike |
+| Q13 Kalamkari blouse fabric | 1 / 1 (`tfidf`), 2 / 2 (`minilm`) | **2 / 2**, **2 / 3** | A Kalamkari and a Bagru-print fabric: photos of fabric look like fabric |
+| Q19 "OOMPH!" | 6 / 10, 4 / 10 | **7** / 10, **5** / 10 | Sarees look like sarees; the title says nothing |
+| Q14 Baby girls' frock | 3 / 8, 4 / 7 | 2 / **9**, 3 / **9** | Striped dresses like the query: more good results, fewer of the reference picks |
+| Q09 Max boys' tee | first pick at rank 3 | **rank 1** | |
+| Q04 Plain slim-fit tee | 5 / 10, 3 / 10 | **2** / 10, **1** / 10 | The title says "Plain", but the photo shows a printed tee. The photo methods find printed tees (all labelled good); the reference picks, made from the title, are plain. |
+| Q18 Orange plain women's frock | 3 / 10 (`tfidf`) | **0** / 10 | Ten good short dresses that look alike, none of them a reference pick |
+| Q16 Marvel logo beanie | 3 / 10 (`tfidf`) | 3 / **8**, first pick at rank 4 | Two caps get in; the photo of a black beanie resembles a black cap |
+| Q05 Silk saree | first pick at rank 1 | rank 2 | |
+
+### Findings
+
+- **No method beats `tfidf` on these numbers.** All four find 30% to 32% of the reference picks and 88% to 90% good results; `tfidf` puts a reference pick first most often (MRR 0.82). With 20 test products, the other differences are within noise.
+- **The photo changes which products are found more than how many good ones.** It helps where the title says little or the look is the point (OOMPH!, the fabric, character tees). It hurts where the photo and title disagree (Q04) or where looks cross product kinds (a black beanie and a black cap).
+- **The yardstick favours text.** The reference picks were chosen from titles. Q04 and Q18 show the photo methods returning ten good products that score 0 to 2 on recall. A fair test of the photo would need reference picks chosen while looking at the photos.
+- **The data itself disagrees with itself:** Q04's title says "Plain" for a printed T-shirt. Neither title nor photo is always right.
+- **Q11 (newsboy cap) and Q17 (toddler tee) still find no pick** under any method.
+- **The API keeps `tfidf`:** best MRR, the same Good@10, and no model, photo folder or 65 MB file to ship. The photo methods remain available through the setting `SIMILARITY_METHOD` (see Settings).
+
+### Decisions and trade-offs
+
+| Decision | Why | Cost |
+|---|---|---|
+| The main `medium` photo only | Twice the size CLIP needs; one front view per product | Back views and close-ups are not used |
+| Pad to a white square, 224 × 224 | Nothing cropped; the size CLIP looks at | Fine print details shrink |
+| CLIP ViT-B/32 instead of a CNN | Learned from images with captions; the same library as stage 6 | Not the CNN the brief names; CLIP is known to react to text in photos (logos, watermarks) |
+| Photo weight 0.20, added on top | A noticeable but minority share (17%) | Only one weight was tried |
+| Missing photo skipped, not scored 0 | The brief's fallback; a product without a photo ranks as under the text-only method | — |
+| Photos outside the repo | The repo is in OneDrive | Another machine needs the photos in its own home folder, or `IMAGE_DIR` set |
+| Download and encoding save as they go | The laptop switched off several times; no work was lost | A few extra files during the run |
+| New results labelled from the photos | Style and kind are clearer in a photo | The reference picks are still text-based |
+| Not in the API | Nothing beat `tfidf`; the image stays small | — |
+
+### Open issues
+
+- **Reference picks chosen from text** under-credit the photo methods (Q04, Q18).
+- **Only one photo weight (0.20)** was tried. Rows at 0.10 and 0.30 would show how sensitive the results are.
+- **The photos live outside the repo.** Another machine needs them downloaded again, or `IMAGE_DIR` pointed at a copy.
+- **139 products have no photo** and are always judged on text and attributes alone.
+
+## Stage 8: ANN index
+
+| | |
+|---|---|
+| Module | `similarity/ann.py` (the product vector, the index, the two-step search); `evals/ann_benchmark.py` (the measurements) |
+| Notebook | `notebooks/08_ann.ipynb` |
+| Run once, by hand | `python -m similarity.ann build`, after stage 6 (about a minute) |
+| Output | `data/processed/product_hnsw.faiss` (162 MB): one product vector of 1,214 numbers per product, and the HNSW graph that links them |
+| Measure | `python -m evals.ann_benchmark measure` (the 30,000 real products), `python -m evals.ann_benchmark scale` (1,000,000 made-up vectors) |
+| Methods | `tfidf_ann` on the Methods sheet |
+| Dependency | faiss-cpu 1.16.0, in `requirements-dev.txt` only |
+| API | Exact search by default; `SEARCH_MODE=ann` switches it to the two-step search (see Settings) |
+
+**What Part 3 asks:** a vector search for large datasets, the paper behind it, and why it was chosen. The problem statement's suggested approaches name three ways to make search cheaper. This stage covers ANN indexing, and stage 4 already caches each product's top 100. Dimensionality reduction (PCA) was left out by decision; see Open issues.
+
+### How HNSW works
+
+**Exact search** compares the query with every product. Its time grows in step with the catalogue: 22 ms here, and about 1 s at a million products (measured below).
+
+**HNSW** (Hierarchical Navigable Small World graphs, Malkov & Yashunin, 2016; IEEE TPAMI 2018) avoids comparing with everything:
+
+1. **A graph.** Each product is linked to up to M of its nearest products.
+2. **A walk.** A search starts at a fixed entry product and moves to whichever linked product is closest to the query. It repeats until no link gets closer. It keeps a list of the best `efSearch` products seen so far, so it can back out of a dead end.
+3. **Layers** (the "hierarchical"). Every product sits on the bottom layer, and fewer and fewer also sit on the layers above. The top layers work like motorways: a search crosses the catalogue in a few long jumps, then drops a layer and walks the local streets. So its time grows with the logarithm of the catalogue size, not with the size itself.
+
+Our index has 3 layers: all 30,000 products on the bottom layer, 479 also on the middle one, and 7 on the top.
+
+| Setting | Value | What it does |
+|---|---|---|
+| M | 64 | Links per product on each layer. More links: fewer misses, more memory. |
+| efConstruction | 500 | How many candidates are weighed when a product is linked in. Larger: a better graph, a slower build. |
+| efSearch | 64, raised to the shortlist size (1,000) | How many candidates a search keeps. Larger: better recall, slower search. A search keeps at least as many as it returns, so for the shortlist this is always 1,000; it is not a setting. |
+
+The index is built with one thread, so the same vectors always give the same graph and the same results. The saved file is checked against the current product vectors when it is read. If the products or the title embeddings have changed, it refuses to load and asks for a rebuild.
+
+### Why HNSW
+
+| Option | How it narrows the search | Why not chosen |
+|---|---|---|
+| Exact search | It doesn't | The yardstick: always right, but time grows with the catalogue |
+| IVF (FAISS) | Groups the vectors into k-means clusters and scans only the `nprobe` clusters nearest the query | Needs a training step and a cluster count to tune; misses neighbours that fall just across a cluster border |
+| Product quantization (Jégou, Douze & Schmid, 2011) | Compresses each vector to a few bytes | Saves memory, which 30,000 products don't need, and costs recall. It is the step to add at hundreds of millions. |
+| Annoy (Spotify) | Many random-split trees | A new product means rebuilding the trees; slower than HNSW at the same recall in ANN-Benchmarks |
+| **HNSW** | **A graph walk** | **Chosen** |
+
+Why HNSW:
+- **Speed at high recall.** It is among the fastest methods at high recall in ANN-Benchmarks (Aumüller, Bernhardsson & Faithfull, *Information Systems*, 2020).
+- **No training.** Products are added one at a time, so a new product doesn't mean a rebuild.
+- **Three settings**, each with a clear meaning.
+- **It ships in FAISS** (Johnson, Douze & Jégou, "Billion-scale similarity search with GPUs", 2017). FAISS also has IVF and product quantization for when a catalogue outgrows memory.
+
+The problem statement's "available on Hugging Face" fits too: the `datasets` library attaches a FAISS index to a dataset (`add_faiss_index`). It is the same engine; FAISS is used directly here because our vectors live in numpy, not in a `Dataset`.
+
+The costs:
+- **Memory:** every vector plus its links.
+- **Build time.**
+- **No removal:** FAISS's HNSW cannot remove a product.
+- **A few products can end up unreachable** (below).
+
+### Our score is not one vector, so the search has two steps
+
+The API's score mixes seven attributes and skips the ones a pair lacks (Gower, stage 3). An index needs one list of numbers per product, compared by a single dot product. So:
+
+1. **Shortlist:** HNSW returns the 1,000 products whose vectors are closest to the query's.
+2. **Re-rank:** only those 1,000 are scored with the usual weighted score, by the same `search.rank` code, applied to just those rows (`Features.take`).
+
+A shortlisted product gets exactly its usual score. So the two steps can only go wrong in one way: a product that belongs in the top 10 is left off the shortlist.
+
+### Which vector to index
+
+**Title only (first try).** The plan was to index the MiniLM title vectors of stage 6. HNSW found the nearest titles almost perfectly (99.7% in 0.2 ms), but the final top 10 was often wrong. The title is only 30% of the API's score. For the frock test product (Q14), exact search's places 5 to 10 were girls' dresses from Biba and Cherokee: the same category, gender and price range, but their titles ranked 7,939th to 20,358th by meaning. No title-only shortlist could contain them.
+
+**One product vector (final).** Each attribute becomes a block of numbers. Each block has length 1, so the dot product of two blocks is that attribute's similarity. Each block is multiplied by the square root of its weight, so the dot product of two whole vectors is the weighted sum.
+
+| Block | Numbers | How | Weight |
+|---|---:|---|---:|
+| Title | 384 | The MiniLM numbers of stage 6, standing in for TF-IDF | 0.30 |
+| Category | 520 | A 1 in the slot of the child category, or of the browsenode when there is none | 0.20 |
+| Gender | 4 | A 1 in the slot of the gender | 0.10 |
+| Brand | 256 | A 1 in one of 256 slots, by brand code (hashing): two of the 6,336 brands share a slot 1 time in 256 | 0.15 |
+| Price | 50 | Overlapping bands on a log scale: a price twice another scores 0.5, the same as the API's smaller ÷ larger | 0.15 |
+| **Total** | **1,214** | | |
+
+Colour and weight are left out: they count 5% each and are missing for about 80% of products. A missing attribute is a block of 0s. Finally each vector is scaled to length 1, so the other blocks of a product with gaps count for more. That is close to the API skipping what is missing, though not equal to it: Gower divides by the weights *both* products have.
+
+Recall@10 against exact search over 500 random products, with exact shortlists (no HNSW yet), so only the vector is being tested:
+
+| Vector | Shortlist 250 | 500 | 1,000 |
+|---|---:|---:|---:|
+| Title only | 75.0% | 80.8% | 86.2% |
+| + category, gender, brand | — | 90.4% | — |
+| + price | 89.7% | 93.7% | 96.1% |
+| **Scaled to length 1 (final)** | **92.8%** | **95.6%** | **97.2%** |
+| TF-IDF title instead of MiniLM (not indexable, see below) | 94.8% | 96.4% | — |
+
+**What the rest of the gap comes from:**
+- **The title.** The API scores titles with TF-IDF, and the vector uses MiniLM. TF-IDF has 7,412 mostly empty numbers; HNSW needs a short, dense list, which would mean PCA first.
+- **Gower's skipping of missing values,** which a fixed vector can only approximate.
+
+### Unreachable products
+
+The first build used M = 32 and efConstruction = 200. In the evaluation, `tfidf_ann` then lost the rank-1 reference pick of Q06 and of Q13, and its MRR fell from 0.82 to 0.72. Both picks were among the query's 2 closest vectors, yet a search 1,000 deep did not return them. Searching with each product's own vector showed **41 products (0.14%) that could not be found at all**.
+
+HNSW keeps at most M links per product. When a product collects too many links, it drops some, so a product can end up with no link pointing to it. Identical vectors were not the cause: there are 1,466 groups of them, and indexing each only once still left 41 unreachable.
+
+| M | efConstruction | Unreachable at efSearch 64 | at 1,000 (the shortlist) |
+|---:|---:|---:|---:|
+| 32 | 200 | 41 | 11 |
+| 32 | 500 | 15 | 4 |
+| 64 | 500 (final) | 10 | **0** |
+| 128 | 200 | 26 | 0 |
+
+With M = 64 and efConstruction = 500, every product is found at the shortlist depth. The cost: the index grows from 154 to 162 MB, and the build from 24 to 63 s.
+
+### Results: the 30,000 real products
+
+500 random products. Step 1 alone, finding the 10 nearest product vectors:
+
+| Search | Recall@10 | ms per query |
+|---|---:|---:|
+| Exact | 100% | 5.9 |
+| HNSW, efSearch 10 | 98.3% | 0.12 |
+| HNSW, efSearch 32 | 99.8% | 0.25 |
+| HNSW, efSearch 64 | 99.8% | 0.41 |
+| HNSW, efSearch 256 | 99.8% | 1.11 |
+
+Both steps, compared with the API's top 10:
+
+| Search | Recall@10 | Same top 10 | ms per query |
+|---|---:|---:|---:|
+| Exact (the API) | 100% | 100% | 22.3 |
+| Shortlist 100 + re-rank | 88.0% | 61.0% | 1.7 |
+| Shortlist 250 + re-rank | 92.6% | 73.8% | 2.5 |
+| Shortlist 500 + re-rank | 95.5% | 81.2% | 3.8 |
+| **Shortlist 1,000 + re-rank (chosen)** | **97.2%** | **87.4%** | **6.5** |
+| Shortlist 2,000 + re-rank | 98.4% | 91.4% | 13.1 |
+
+**How recall is counted:** a result counts as found when it scores at least as well as exact search's 10th result. Many products share a title, so several can tie with the 10th, and returning a different one of them is not a miss (as in ANN-Benchmarks). "Same top 10" is the strict measure: the identical ten products, in the same order.
+
+With the shortlist of 1,000, the HNSW shortlist reaches the same recall as an exact one (97.2%), so the index itself adds no error; all of it comes from the vector. Re-ranking costs about 2.2 ms for 1,000 products, the same at any catalogue size.
+
+### Results: evaluation
+
+| Method | Recall@5 | Recall@10 | MRR@10 | Good@10 | ms per query |
+|---|---:|---:|---:|---:|---:|
+| `tfidf` (the API) | 24% | 32% | 0.82 | 90% | 21.7 |
+| `tfidf_ann` | 24% | 32% | 0.82 | 90% | 8.1 |
+
+Only 2 of the 20 test products get a different top 10, and both score the same:
+- **Q04 (Flying Machine tee):** places 7 to 10 are reordered among the same good Flying Machine T-shirts.
+- **Q05 (Banarasi silk saree):** place 10 is a different good saree.
+
+Every result had already been labelled, so no new labels were needed.
+
+### Scale test: 1,000,000 vectors
+
+The catalogue has only 30,000 products, so a million vectors were made up:
+- **How:** copies of real title vectors, each number nudged by random noise (σ = 0.02), then scaled back to length 1. A copy keeps a cosine of about 0.93 with its original. Purely random vectors would not do: in hundreds of dimensions, every pair is about equally far apart, which no catalogue looks like.
+- **Size:** the copies have the 384 title numbers, not the 1,214 of the product vector, which would need 4.9 GB.
+- **Build:** the index was built with all 16 threads, since only its time matters here.
+
+| Catalogue | 30,000 (real) | 200,000 | 1,000,000 |
+|---|---:|---:|---:|
+| Exact search on the vectors alone | 2.0 ms | 11.9 ms | 55.4 ms |
+| HNSW, efSearch 16: recall@10, time | — | 99.5%, 0.12 ms | 98.2%, 0.12 ms |
+| HNSW, efSearch 64: recall@10, time | — | 99.9%, 0.32 ms | 100%, 0.28 ms |
+| Index build (16 threads) | — | 150 s | 708 s |
+
+How the API's two options grow (ms per query):
+
+| Catalogue | Exact search, all seven attributes (today's API code) | Two steps: shortlist of 1,000 + re-rank |
+|---|---:|---:|
+| 30,000 | 22 | 6.2 (measured) |
+| 200,000 | 154 | about 6.5 (4.3 + 2.2) |
+| 1,000,000 | 1,109 | about 6.1 (3.9 + 2.2) |
+
+Exact search with all seven attributes was timed with the real products repeated to fill each catalogue size; it scores and sorts every row, as the API does. Its time grows a little faster than the catalogue (sorting). The two-step column adds the measured shortlist time to the 2.2 ms that re-ranking 1,000 products takes at any size. Beyond 30,000 its shortlist was timed on 384-number vectors, so with the full 1,214-number product vector it would be somewhat slower; at 30,000 the product-vector shortlist takes 3.9 ms.
+
+### Findings
+
+- **HNSW itself is close to perfect, and its time hardly grows.** At a million vectors it finds all 10 nearest at efSearch 64 in 0.28 ms, against 55 ms for exact search on the same vectors: about 200 times faster. From 200,000 to 1,000,000 vectors its time stayed the same while exact search grew 4.7 times. That is the logarithmic growth the layers give.
+- **The hard part was the score, not the index.** The API's score is not one vector. A title-only shortlist recovered 86% of the API's top 10 at 1,000; the product vector recovers 97%.
+- **On the 20 test products, `tfidf_ann` scores exactly like `tfidf`** (MRR 0.82, Good@10 90%), in 8 ms instead of 22.
+- **At 30,000 products the gain is about 15 ms, which nobody notices.** A repeated product is answered from the cache in 2 ms. At a million products, exact search takes 1.1 s, against about 6 ms for the two steps.
+- **Exact search passes 100 ms at about 150,000 products** (154 ms at 200,000). That is roughly where switching the API to the two-step search starts to pay.
+- **HNSW can leave products unreachable.** 41 were, at M = 32. It is worth checking in any HNSW deployment; here M = 64 and efConstruction = 500 fixed it.
+- **The photo is not in the index.** The index copies the API's score, and the API has no photo score (stage 7).
+
+### Decisions and trade-offs
+
+| Decision | Why | Cost |
+|---|---|---|
+| HNSW, from FAISS | Fast at high recall, no training, three clear settings; FAISS also holds IVF and PQ for later | FAISS's HNSW cannot remove a product; memory for the links |
+| One product vector, not titles alone | Titles alone recovered 81% of the API's top 10 at a shortlist of 500; the product vector 96% | 1,214 numbers per product; an approximation of Gower |
+| MiniLM for the title block | Short and dense, already built in stage 6 | Not the API's TF-IDF: about 1 point of recall |
+| Brand hashed into 256 slots | 6,336 brands would need 6,336 numbers | Two brands share a slot 1 time in 256 |
+| Colour and weight left out | 5% each, missing for about 80% of products | Re-ranking still uses them |
+| Shortlist then exact re-rank | The API's own score decides the order; a shortlisted product scores exactly as before | Re-ranking costs 2.2 ms per query |
+| Shortlist of 1,000 | 97% recall, 87% identical top 10, about 3 times faster than exact at 30,000 | 2.8% of the top 10 is a different, slightly lower-scoring product |
+| M = 64, efConstruction = 500 | Every product reachable at the shortlist depth | 162 MB, 63 s build |
+| Built with one thread, file checked on load | The same results on every run; a stale index refuses to load | A slower build |
+| The API's default stays exact search | 22 ms (2 ms from the cache) is fast enough at 30,000; no faiss, index file or build step in the image | ANN is one setting away (`SEARCH_MODE=ann`), but the Docker image would need faiss-cpu and the index |
+| No PCA | Decided before the stage | The TF-IDF title cannot go into the index |
+
+### Open issues
+
+- **PCA was not done.** It would let the TF-IDF title into the index (about 1 point of recall) and shorten the vectors, which matters at a million products: 1,214 numbers × 4 bytes × 1,000,000 = 4.9 GB.
+- **The scale test uses made-up vectors.** Real neighbourhoods are more varied, so recall at a million real products may be lower.
+- **Re-ranking copies the shortlisted rows** (`Features.take`) on every query. That is fast enough here, but a server would score the rows in place.
+- **The index must be rebuilt** when the products or the title embeddings change. A stale file refuses to load, but nothing rebuilds it automatically.
+- **The photo is not in the product vector.** It copies the API's score, which has no photo. A CLIP block, or a second index for photos whose shortlist is merged with this one, is the next step if photos are used.
+- **10 products are still unreachable at efSearch 64.** They are only found because the shortlist search goes 1,000 deep. A small shortlist would need a check like the one in the notebook.

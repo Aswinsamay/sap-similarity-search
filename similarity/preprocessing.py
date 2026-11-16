@@ -9,7 +9,7 @@ Output: data/processed/products.parquet           (30,000 clean products)
 
 This stage only makes each field clean and typed. It does not decide how
 products are compared; that is the job of the later stages. Every rule here
-comes from a finding in process_readme.md. Missing values are stored as null,
+comes from a finding in the EDA (notebooks/eda.ipynb). Missing values are stored as null,
 never guessed.
 """
 
@@ -20,13 +20,12 @@ from pathlib import Path
 
 import pandas as pd
 
-RAW_PATH = Path(
-    "data/archive/"
-    "marketing_sample_for_amazon_com-amazon_fashion_products__20200201_20200430__30k_data.ldjson"
-)
-PROCESSED_PATH = Path("data/processed/products.parquet")
+from similarity import config
 
-# The only raw columns this project uses. Everything else is out of scope (see process_readme.md).
+RAW_PATH = config.RAW_DATA_PATH         # settings: see similarity/config.py and .env.example
+PROCESSED_PATH = config.PRODUCTS_PATH
+
+# The only raw columns this project uses. Everything else is out of scope (see notebooks/eda.ipynb).
 RAW_COLUMNS = [
     "uniq_id",
     "asin",

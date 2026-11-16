@@ -15,3 +15,6 @@ openpyxl==3.1.5
 # Search only reads the saved numbers, so the API image needs none of this.
 sentence-transformers==6.3.0
 pillow==11.3.0
+
+# Stage 08: the HNSW index (similarity/ann.py). The API keeps exact search, so not in the image.
+faiss-cpu==1.16.0

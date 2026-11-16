@@ -87,3 +87,42 @@ def test_api_weights_never_read_the_embedding_file(monkeypatch, tmp_path):
     rank(features, 0, WEIGHTS)                                 # works without the file
     with pytest.raises(FileNotFoundError):
         rank(features, 0, METHOD_WEIGHTS["minilm"])            # minilm needs it, and says so
+
+
+# --- stage 07: the photo score -----------------------------------------------------------
+
+def test_image_methods_add_the_photo_on_top():
+    for title in ["tfidf", "minilm"]:
+        with_photo = METHOD_WEIGHTS[f"{title}_image"]
+        assert with_photo["image"] == search.IMAGE_WEIGHT == 0.20
+        assert {k: v for k, v in with_photo.items() if k != "image"} == METHOD_WEIGHTS[title]
+
+
+def with_photos(features, present):
+    """Made-up photo numbers: the query's photo matches product c, not product a."""
+    vectors = np.array([unit(1, 0), unit(0, 1), unit(0, 1), unit(1, 0.05)])
+    features.image_embeddings = Embeddings(vectors, np.array(present), 0.0, "toy")
+    return features
+
+
+def test_photo_can_change_the_order():
+    features = with_photos(toy_features(), [True, True, True, True])
+    assert features.ids[rank(features, 0, METHOD_WEIGHTS["tfidf"])[0][0]] == "b"          # rating decides
+    assert features.ids[rank(features, 0, METHOD_WEIGHTS["tfidf_image"])[0][0]] == "c"    # the matching photo wins
+
+
+def test_no_photos_ranks_like_the_text_only_method():
+    features = with_photos(toy_features(), [False, False, False, False])
+    text_only, text_score = rank(features, 0, METHOD_WEIGHTS["tfidf"])
+    with_image, image_score = rank(features, 0, METHOD_WEIGHTS["tfidf_image"])
+    assert text_only.tolist() == with_image.tolist()
+    assert text_score == pytest.approx(image_score)          # skipped, not counted as 0
+
+
+def test_a_missing_photo_is_skipped_not_zero():
+    features = with_photos(toy_features(), [True, True, True, False])   # c has no photo
+    scores = attribute_scores(features, 0, METHOD_WEIGHTS["tfidf_image"])
+    assert not scores["image"][1][3]                                    # not compared on the photo
+    text_only = search.combine(attribute_scores(features, 0, METHOD_WEIGHTS["tfidf"]), METHOD_WEIGHTS["tfidf"])
+    with_image = search.combine(scores, METHOD_WEIGHTS["tfidf_image"])
+    assert with_image[3] == pytest.approx(text_only[3])                 # c keeps its text-only score

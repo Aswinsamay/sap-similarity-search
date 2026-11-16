@@ -5,6 +5,10 @@
 #   docker build -t product-similarity .
 #   docker run --rm -p 8000:8000 product-similarity
 #   then open http://localhost:8000/docs
+#
+# Settings (.env.example) are given at run time, not built in: `--env-file .env` or
+# `-e CACHE_SIZE=2048`. The image holds what tfidf with exact search needs; other methods
+# also need their files from data/processed/ (and faiss-cpu for SEARCH_MODE=ann).
 
 # ---- stage 1: build ----------------------------------------------------------
 FROM python:3.10-slim AS build

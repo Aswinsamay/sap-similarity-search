@@ -20,7 +20,7 @@ def client():
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "products": 30_000}
+    assert response.json() == {"status": "ok", "products": 30_000, "method": "tfidf", "search": "exact"}
 
 
 def test_same_answer_as_the_function(client):

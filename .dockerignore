@@ -11,6 +11,7 @@ venv/
 .ipynb_checkpoints/
 
 # Not part of the service
+notebooks/
 *.ipynb
 *.md
 LICENSE
@@ -19,6 +20,8 @@ evals/
 k8s/
 Presentation/
 eda_output/
+.env
+.env.example
 Dockerfile
 .dockerignore
 

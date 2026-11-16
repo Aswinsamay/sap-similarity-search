@@ -36,6 +36,9 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+          envFrom:                         # the settings in configmap.yaml, as environment variables
+            - configMapRef:
+                name: product-similarity
           resources:
             requests:                  # reserved on the node for this pod (measured: about 280 MiB)
               cpu: 250m                # a quarter of one CPU

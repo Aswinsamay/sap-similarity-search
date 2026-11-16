@@ -1,6 +1,6 @@
 """Where the evaluation data lives: the Queries and Labels sheets of evals/eval_results.xlsx.
 
-The workbook is the only copy of the 20 test products and the hand labels. Every script reads
+The workbook is the only copy of the 20 test products and the judge labels. Every script reads
 them from it. run_eval.py rebuilds the workbook on each run and writes these two sheets back as
 they were read, so a label changed in Excel is kept.
 

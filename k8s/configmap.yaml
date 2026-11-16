@@ -1,0 +1,20 @@
+# The API's settings, given to every pod as environment variables (see .env.example for all
+# settings and what they do). After a change:
+#
+#   kubectl apply -f k8s/configmap.yaml
+#   kubectl rollout restart deployment/product-similarity
+#
+# The image holds only what tfidf with exact search needs. Another method also needs its files
+# (and faiss-cpu for ann) in the image; without them the new pods stop at startup with the
+# reason in `kubectl logs`, never become ready, and the old pods keep serving.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: product-similarity
+  labels:
+    app: product-similarity
+data:
+  SIMILARITY_METHOD: "tfidf"
+  SEARCH_MODE: "exact"
+  MAX_SIMILAR: "100"
+  CACHE_SIZE: "1024"

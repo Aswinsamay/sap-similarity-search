@@ -6,8 +6,9 @@ Run from the repo root:
 
 Every product is scored against the query on each attribute (0 to 1). The
 scores are combined into one weighted average over the attributes both products
-have, and the best are returned. Exact search over 30,000 products takes a few
-milliseconds, so no index is needed yet (that is stage 05).
+have, and the best are returned. This is exact search: every product is scored, in about
+20 to 40 ms over 30,000 products. The setting SEARCH_MODE=ann scores only an HNSW shortlist
+instead (stage 08, ann.py); see `search` below.
 """
 
 from __future__ import annotations
@@ -18,43 +19,55 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from similarity.embeddings import TITLE_PATH, Embeddings, load_embeddings, rescale
+from similarity import config
+from similarity.embeddings import IMAGE_PATH, TITLE_PATH, Embeddings, load_embeddings, rescale
 from similarity.features import Features, build_features
 from similarity.preprocessing import load_products
 
-# How much each attribute counts. A score only divides by the weights of the
-# attributes a pair actually has, so these do not need to add up to 1.
-# These are the weights of method "tfidf", the one the API uses.
+# How much each attribute counts (settings WEIGHT_*: see similarity/config.py and .env.example).
+# A score only divides by the weights of the attributes a pair actually has, so these do not
+# need to add up to 1. These are the weights of method "tfidf".
 WEIGHTS = {
-    "text": 0.30,
-    "category": 0.20,
-    "gender": 0.10,
-    "price": 0.15,
-    "brand": 0.15,
-    "colour": 0.05,
-    "weight": 0.05,
+    "text": config.WEIGHT_TEXT,
+    "category": config.WEIGHT_CATEGORY,
+    "gender": config.WEIGHT_GENDER,
+    "price": config.WEIGHT_PRICE,
+    "brand": config.WEIGHT_BRAND,
+    "colour": config.WEIGHT_COLOUR,
+    "weight": config.WEIGHT_WEIGHT,
 }
 
 
-def method_weights(title: str = "tfidf") -> dict[str, float]:
+# The photo score of stage 07, added on top of the other weights.
+IMAGE_WEIGHT = config.WEIGHT_IMAGE
+
+
+def method_weights(title: str = "tfidf", image: bool = False) -> dict[str, float]:
     """The weights of one method. "minilm" swaps the TF-IDF title score for the sentence-transformer
-    one (stage 06) at the same weight; everything else stays as it is."""
+    one (stage 06) at the same weight; image=True adds the photo score (stage 07). Everything else
+    stays as it is."""
     if title == "tfidf":
-        return dict(WEIGHTS)
-    if title == "minilm":
-        return {("text_embedding" if name == "text" else name): weight for name, weight in WEIGHTS.items()}
-    raise ValueError(f"unknown title score: {title}")
+        weights = dict(WEIGHTS)
+    elif title == "minilm":
+        weights = {("text_embedding" if name == "text" else name): weight for name, weight in WEIGHTS.items()}
+    else:
+        raise ValueError(f"unknown title score: {title}")
+    if image:
+        weights["image"] = IMAGE_WEIGHT
+    return weights
 
 
-# The methods compared in evals/run_eval.py.
+# The methods: the API's setting SIMILARITY_METHOD picks one; evals/run_eval.py compares them all.
 METHOD_WEIGHTS = {
     "tfidf": method_weights("tfidf"),
     "minilm": method_weights("minilm"),
+    "tfidf_image": method_weights("tfidf", image=True),
+    "minilm_image": method_weights("minilm", image=True),
 }
 
 # Scores are rounded to this many decimals before sorting, so 0.8123 and 0.8119
 # count as a tie and the rating decides.
-SCORE_DECIMALS = 3
+SCORE_DECIMALS = config.SCORE_DECIMALS
 
 
 # --- one score per attribute -------------------------------------------------------
@@ -91,6 +104,19 @@ def text_embedding_scores(features: Features, row: int) -> tuple[np.ndarray, np.
     return embedding_scores(title_embeddings(features), row)
 
 
+def image_embeddings(features: Features) -> Embeddings:
+    """The stage 07 photo numbers: read on first use, then kept with the features."""
+    if features.image_embeddings is None:
+        features.image_embeddings = load_embeddings(IMAGE_PATH, features.ids)
+    return features.image_embeddings
+
+
+def image_scores(features: Features, row: int) -> tuple[np.ndarray, np.ndarray]:
+    """The CLIP photo score of stage 07. Missing when either product has no photo, so the pair is
+    judged on its other attributes alone (the fallback)."""
+    return embedding_scores(image_embeddings(features), row)
+
+
 def code_scores(codes: np.ndarray, row: int) -> tuple[np.ndarray, np.ndarray]:
     """1 when the codes are equal, else 0. Missing when either side is -1."""
     score = (codes == codes[row]).astype(float)
@@ -125,6 +151,7 @@ def ratio_scores(values: np.ndarray, row: int) -> tuple[np.ndarray, np.ndarray]:
 SCORERS = {
     "text": text_scores,
     "text_embedding": text_embedding_scores,
+    "image": image_scores,
     "category": category_scores,
     "gender": lambda features, row: code_scores(features.gender, row),
     "price": lambda features, row: ratio_scores(features.price, row),
@@ -233,7 +260,7 @@ def result_checks(features: Features, rows: list[int], weights: dict[str, float]
     return pd.DataFrame(records).set_index("row")
 
 
-# --- the function the README asks for -------------------------------------------------
+# --- the function the problem statement asks for -------------------------------------------------
 
 @lru_cache(maxsize=1)
 def load_features() -> Features:
@@ -241,10 +268,30 @@ def load_features() -> Features:
     return build_features(load_products())
 
 
-def find_similar_products(
-    product_id: str, num_similar: int = 10, weights: dict[str, float] | None = None
-) -> list[str]:
+def search(features: Features, row: int, method: str | None = None, mode: str | None = None):
+    """(rows, scores) of the products most similar to `row`, best first.
+
+    method  which score: tfidf, minilm, tfidf_image or minilm_image (default: setting SIMILARITY_METHOD)
+    mode    exact: score every product; ann: an HNSW shortlist, then the same score on it
+            (stage 8; needs faiss-cpu and the index) (default: setting SEARCH_MODE)
+    """
+    method = method or config.SIMILARITY_METHOD
+    mode = mode or config.SEARCH_MODE
+    if method not in METHOD_WEIGHTS:
+        raise ValueError(f"unknown method {method!r}: choose one of {', '.join(METHOD_WEIGHTS)}")
+    if mode == "exact":
+        return rank(features, row, METHOD_WEIGHTS[method])
+    if mode == "ann":
+        from similarity.ann import ann_rank   # faiss is imported only when ANN is asked for
+
+        return ann_rank(features, row, METHOD_WEIGHTS[method])
+    raise ValueError(f"unknown search mode {mode!r}: choose one of {', '.join(config.SEARCH_MODES)}")
+
+
+def find_similar_products(product_id: str, num_similar: int = 10,
+                          method: str | None = None, mode: str | None = None) -> list[str]:
     """The uniq_ids of the num_similar products most similar to product_id, most similar first.
+    `method` and `mode` default to the settings SIMILARITY_METHOD and SEARCH_MODE (see `search`).
 
     Raises KeyError for an unknown product_id and ValueError when num_similar < 1.
     Asking for more products than exist returns all of them.
@@ -254,7 +301,7 @@ def find_similar_products(
     features = load_features()
     if product_id not in features.row_of:
         raise KeyError(f"unknown product_id: {product_id}")
-    order, _ = rank(features, features.row_of[product_id], weights or WEIGHTS)
+    order, _ = search(features, features.row_of[product_id], method, mode)
     return features.ids[order[:num_similar]].tolist()
 
 

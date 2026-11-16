@@ -1,29 +1,30 @@
-"""Score similarity methods against the hand-labelled ground truth and write an Excel workbook.
+"""Score similarity methods against the LLM-judged ground truth and write an Excel workbook.
 
 Run from the repo root, after `python -m similarity.preprocessing`:
 
     python -m evals.run_eval                           # every method on the Methods sheet; tfidf in Details
     python -m evals.run_eval --alternative minilm      # plus a second method in Summary and Details
 
-Everything lives in evals/eval_results.xlsx. The run reads the test products and hand labels
+Everything lives in evals/eval_results.xlsx. The run reads the test products and judge labels
 from its Queries and Labels sheets (see evals/store.py), then rebuilds the workbook:
 
     Methods  one row per method with its ranking metrics
     Summary  the metrics per test product, as formulas over Details, and the overall numbers
     Details  each method's top 10 beside the ground truth
     Queries  the 20 test products (written back as read)
-    Labels   the hand labels (written back as read, so edits made in Excel are kept)
+    Labels   the judge labels (written back as read, so edits made in Excel are kept)
 
 The same summary is printed in the terminal. A result nobody has labelled yet is added to the
 Labels sheet with an empty `good` cell, shows as "not labelled" (never as wrong), and the run
 prints a warning: fill in yes / no and run again.
 
-A method whose files are missing (for example minilm before `python -m similarity.embeddings`)
-is skipped with a message.
+A method whose files are missing is skipped with a message: minilm before
+`python -m similarity.embeddings`, the photo methods before `python -m similarity.images embed`,
+tfidf_ann before `python -m similarity.ann build` (or without faiss-cpu installed).
 
 Three metrics per query, each over the method's top 10:
     good results        how many of the 10 were labelled good
-    ground truth found  how many of the hand-picked best 10 the method also returned
+    ground truth found  how many of the judge's best 10 (the reference picks) the method also returned
     first good result   the rank of the first good result (1 is best)
 """
 
@@ -40,9 +41,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from evals.store import WORKBOOK_PATH, load_data, save, write_data_sheets
+from similarity import config
 from similarity.features import genders
 from similarity.preprocessing import load_products
-from similarity.search import METHOD_WEIGHTS, load_features, rank
+from similarity.search import load_features, search
 
 TOP_K = 10
 NONE_RANK = TOP_K + 1   # "no good result" counts as rank 11 in the average
@@ -50,17 +52,23 @@ NONE_RANK = TOP_K + 1   # "no good result" counts as rank 11 in the average
 BASELINE = "tfidf"   # always shown in Summary and Details
 
 
-def by_weights(weights: dict[str, float]):
-    """A method that ranks with the stage 3 search and these weights."""
-    return lambda features, row: rank(features, row, weights)[0]
-
-
-# A method takes the features and a query row and returns candidate rows, best first.
-# To compare a new method, add it here; it gets a row on the Methods sheet.
+# Each method: (description, score, search mode), the same two choices as the API's settings
+# SIMILARITY_METHOD and SEARCH_MODE. To compare a new one, add it here; it gets a row on the
+# Methods sheet.
 METHODS = {
-    "tfidf": ("TF-IDF title + other attributes (stage 3, the API's method)", by_weights(METHOD_WEIGHTS["tfidf"])),
-    "minilm": ("MiniLM title embedding + other attributes (stage 6)", by_weights(METHOD_WEIGHTS["minilm"])),
+    "tfidf": ("TF-IDF title + other attributes (stage 3, the API's method)", "tfidf", "exact"),
+    "minilm": ("MiniLM title embedding + other attributes (stage 6)", "minilm", "exact"),
+    "tfidf_image": ("TF-IDF title + other attributes + CLIP photo (stage 7)", "tfidf_image", "exact"),
+    "minilm_image": ("MiniLM title + other attributes + CLIP photo (stage 7)", "minilm_image", "exact"),
+    "tfidf_ann": (f"tfidf, but only an HNSW shortlist of {config.ANN_CANDIDATES:,} products is scored (stage 8)",
+                  "tfidf", "ann"),
 }
+
+
+def top_rows(features, row: int, method: str):
+    """The rows a method returns for one query row, best first."""
+    _, score, mode = METHODS[method]
+    return search(features, row, score, mode)[0]
 
 
 # --- the three metrics, for the terminal and the tests (the workbook uses formulas) ---------
@@ -108,12 +116,12 @@ def overall(table: pd.DataFrame) -> dict[str, float]:
     }
 
 
-# --- ranking metrics for the Methods sheet: the hand-picked 10 are the right answers --------
+# --- ranking metrics for the Methods sheet: the judge's 10 reference picks are the right answers------
 
 RANKING_METRICS = {   # name: (number format, one-line meaning)
-    "Recall@5": ("0%", "share of the hand picks found in the top 5 (at most 50% with 10 picks)"),
-    "Recall@10": ("0%", "share of the hand picks found in the top 10"),
-    "MRR@10": ("0.00", "1 / rank of the first hand pick, 0 if none in the top 10"),
+    "Recall@5": ("0%", "share of the reference picks found in the top 5 (at most 50% with 10 picks)"),
+    "Recall@10": ("0%", "share of the reference picks found in the top 10"),
+    "MRR@10": ("0.00", "1 / rank of the first reference pick, 0 if none in the top 10"),
     "Good@10": ("0%", "share of the top 10 labelled good (uses the good / not good labels)"),
 }
 
@@ -186,7 +194,7 @@ def details_sheet(wb: Workbook, queries: pd.DataFrame, labels: pd.DataFrame, res
     """10 rows per test product: the ground truth beside each method's results, all plain values."""
     ws = wb.create_sheet("Details")
     _group(ws, 1, 1, 3, "Test product")
-    _group(ws, 1, 4, 6, "Ground truth: the 10 most similar, picked by hand")
+    _group(ws, 1, 4, 6, "Ground truth: the 10 most similar, picked by the LLM judge")
     titles = ["Query ID", "Query", "Rank", "uniq_id", "Name", "Price"]
     for i, method in enumerate(methods):
         first = 7 + 5 * i
@@ -241,7 +249,7 @@ def summary_sheet(wb: Workbook, queries: pd.DataFrame, methods: list[str]) -> No
     ws = wb.active
     ws.title = "Summary"
     ws.cell(row=1, column=1, value=f"Similarity evaluation: {len(queries)} test products, top {TOP_K} results each, "
-                                   "against a hand-labelled ground truth").font = Font(bold=True)
+                                   "against a ground truth labelled by an LLM judge").font = Font(bold=True)
     _group(ws, 2, 1, 4, "Test product")
     titles = ["Query ID", "Query", "Kind", "Ground-truth size"]
     for i, method in enumerate(methods):
@@ -380,17 +388,17 @@ def main() -> None:
 
     # every registered method is run (the Methods sheet scores them all); Details shows `methods`
     all_results, timings = {}, {}
-    for method, (_, find) in METHODS.items():
+    for method in METHODS:
         try:
-            find(features, 0)   # the first call reads the method's files, so it is not timed
-        except FileNotFoundError as error:
+            top_rows(features, 0, method)   # the first call reads the method's files, so it is not timed
+        except (FileNotFoundError, ImportError) as error:   # a file not built yet, or faiss not installed
             if method in methods:
                 raise SystemExit(f"{method}: {error}") from error
             print(f"Skipped {method}: {error}")
             continue
         start = time.perf_counter()
         all_results[method] = {
-            q.query_id: features.ids[find(features, features.row_of[q.uniq_id])[:TOP_K]].tolist()
+            q.query_id: features.ids[top_rows(features, features.row_of[q.uniq_id], method)[:TOP_K]].tolist()
             for q in queries.itertuples(index=False)
         }
         timings[method] = (time.perf_counter() - start) / len(queries) * 1000
@@ -399,7 +407,7 @@ def main() -> None:
     # results nobody has labelled yet go into the Labels sheet with an empty `good` cell
     extra = unlabelled_rows(all_results, labels, products)
     if len(extra):
-        labels = pd.concat([labels, extra], ignore_index=True)
+        labels = pd.DataFrame([*labels.to_dict("records"), *extra.to_dict("records")], columns=labels.columns)
     scores = {method: method_scores(top, labels) for method, top in all_results.items()}
 
     wb = build_workbook(queries, labels, results, info, methods, scores, timings)

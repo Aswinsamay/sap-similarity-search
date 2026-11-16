@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -26,7 +27,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from similarity.embeddings import Embeddings
 from similarity.preprocessing import load_products
 
-# Different spellings of the same colour, checked against the data (see process_readme.md).
+# Different spellings of the same colour, checked against the data (see notebooks/02_features.ipynb).
 COLOUR_SPELLINGS = {
     "gray": "grey",
     "navy": "navy blue",
@@ -77,6 +78,34 @@ class Features:
     # Stages 06 and 07: read from data/processed/ the first time a method uses them (see search.py)
     title_embeddings: Embeddings | None = None
     image_embeddings: Embeddings | None = None
+    # Stage 08: the HNSW index of the product vectors, read on first use (see ann.py)
+    ann_index: Any = None
+
+    def take(self, rows: np.ndarray) -> Features:
+        """The same features for only these rows, in this order (stage 08 re-scores a shortlist).
+
+        A pair's score depends only on the two products, so it is the same here as in the full
+        table. The index covers the full table, so it is not carried over.
+        """
+        ids = self.ids[rows]
+        return replace(
+            self,
+            ids=ids,
+            row_of={uniq_id: row for row, uniq_id in enumerate(ids)},
+            text=self.text[rows],
+            brand=self.brand[rows],
+            category=self.category[rows],
+            browsenode=self.browsenode[rows],
+            gender=self.gender[rows],
+            colours=self.colours[rows],
+            price=self.price[rows],
+            weight=self.weight[rows],
+            rating=self.rating[rows],
+            asin=self.asin[rows],
+            title_embeddings=self.title_embeddings and self.title_embeddings.take(rows),
+            image_embeddings=self.image_embeddings and self.image_embeddings.take(rows),
+            ann_index=None,
+        )
 
 
 def prepare_text(name: str) -> str:

@@ -24,20 +24,22 @@ the rescaling of scores.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from similarity import config
 from similarity.preprocessing import load_products
 
-TITLE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-TITLE_PATH = Path("data/processed/title_embeddings.npz")
-IMAGE_PATH = Path("data/processed/image_embeddings.npz")   # written by stage 07
+# Settings: see similarity/config.py and .env.example
+TITLE_MODEL = config.TITLE_MODEL
+TITLE_PATH = config.TITLE_EMBEDDINGS_PATH
+IMAGE_PATH = config.IMAGE_EMBEDDINGS_PATH   # written by stage 07
+THREADS = config.ENCODE_THREADS             # CPU threads for encoding, kept low so the laptop does not run flat out
 
 RANDOM_PAIRS = 10_000   # random pairs used to find the score that means "unrelated"
-THREADS = 4             # CPU threads for encoding, kept low so the laptop does not run flat out
 SEED = 0
 
 
@@ -47,6 +49,10 @@ class Embeddings:
     present: np.ndarray   # False where a product has nothing to embed (no photo); all True for titles
     baseline: float       # median cosine of random pairs: the score of two unrelated products
     model: str
+
+    def take(self, rows: np.ndarray) -> Embeddings:
+        """Only these rows, in this order. The baseline stays that of the whole catalogue."""
+        return replace(self, vectors=self.vectors[rows], present=self.present[rows])
 
 
 # --- shared with stage 07 ----------------------------------------------------------------

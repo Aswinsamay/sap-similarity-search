@@ -1,11 +1,11 @@
-"""Pick the 20 query products and, for each, a shortlist of candidates to label by hand.
+"""Pick the 20 query products and, for each, a shortlist of candidates for the LLM judge to label.
 
 Run once from the repo root:
 
     python -m evals.shortlist
 
 Writes the Queries and Labels sheets of evals/eval_results.xlsx (see evals/store.py). Labels has
-one row per candidate, with `good` and `gt_rank` left empty to be filled in by hand. It refuses
+one row per candidate, with `good` and `gt_rank` left empty to be filled in by the judge. It refuses
 to run when the workbook already holds labels, so finished labels are never lost.
 
 Why several routes: the reviewer cannot read 30,000 products per query, only a shortlist. If the
@@ -45,7 +45,7 @@ RANDOM_PER_CATEGORY = {
 }
 RANDOM_OTHER = 2
 
-# 8 hand-picked cases where a search is likely to struggle
+# 8 deliberately chosen cases where a search is likely to struggle
 HARD_CASES = {
     "26d41bdc1495de290bc8e6062d927729": "saree blouse fabric filed under kurtis",
     "2304753b72be21b48128f7d2ae482c9f": "frock: similar items are often called 'dress'",
