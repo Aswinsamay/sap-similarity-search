@@ -1,22 +1,19 @@
+# What the Docker image installs: only what the API needs at runtime.
+# Notebooks and tests also need requirements-dev.txt.
+#
 # Pins support Python 3.10 (the Dockerfile) and Python 3.13 (this machine).
-# Current FastAPI, NumPy, and PyTorch releases require 3.11+, so those are not used.
+# Current FastAPI and NumPy releases require 3.11+, so those are not used.
 
 # API
 fastapi==0.161.1
 uvicorn==0.54.0
 
-# Tabular data, TF-IDF, and numeric similarity
+# Tabular data, TF-IDF, and numeric similarity.
+# scipy (sparse matrices) is installed by scikit-learn, so it is not pinned here.
 numpy==2.2.6
 pandas==2.3.3
 scikit-learn==1.7.2
 
-# EDA plots
-matplotlib==3.10.1
-
-# Visual similarity (ResNet / EfficientNet via torchvision).
-# Not imported by the API until image embeddings are added.
-# The wheels are large and run on CPU when no GPU is present.
-torch==2.14.1
-torchvision==0.29.2
-pillow==11.3.0
-httpx==0.28.1
+# Processed data format: stage 01 writes Parquet.
+# 26.x drops Python 3.10, which the Dockerfile uses.
+pyarrow==25.0.1

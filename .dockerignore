@@ -1,0 +1,26 @@
+# Everything not listed here is sent to Docker when building. The Dockerfile only
+# needs requirements.txt, app.py, similarity/ and data/archive/.
+
+# Local environment and tool output
+venv/
+.venv/
+.git/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Not part of the service
+*.ipynb
+*.md
+LICENSE
+tests/
+evals/
+k8s/
+Presentation/
+eda_output/
+Dockerfile
+.dockerignore
+
+# Rebuilt inside the image from data/archive/, so the local copy is never used
+data/processed/
