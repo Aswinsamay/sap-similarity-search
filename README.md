@@ -20,11 +20,11 @@ This is my submission for the SAP technical exercise ([Problem_Statement.md](Pro
 | The brief asked for | What I delivered | Where |
 |---|---|---|
 | **Part 1:** `find_similar_products(product_id, num_similar)` | A weighted similarity over 7 attributes. Missing attributes are skipped, duplicate listings removed, and ties go to the higher rating. | `similarity/search.py` |
-| **Part 2:** FastAPI `GET /find_similar_products` *(required)* | Checked inputs, 404 / 422 / 500 errors, a health check, and a cache of each product's top 100 | `app.py` |
-| Docker image deployable on Kubernetes *(required)* | A two-stage, non-root image with a health check | `Dockerfile` |
-| Deploy on a local cluster *(optional)* | A Deployment (2 replicas, probes, rolling updates), a Service and a ConfigMap; run on Docker Desktop | `k8s/` |
+| **Part 2:** FastAPI `GET /find_similar_products`  | Checked inputs, 404 / 422 / 500 errors, a health check, and a cache of each product's top 100 | `app.py` |
+| Docker image deployable on Kubernetes  | A two-stage, non-root image with a health check | `Dockerfile` |
+| Deploy on a local cluster  | A Deployment (2 replicas, probes, rolling updates), a Service and a ConfigMap; run on Docker Desktop | `k8s/` |
 | **Part 3:** vector search for large datasets, with the paper and the reasoning | HNSW (Malkov & Yashunin, 2016) via FAISS (Johnson et al., 2017), as an HNSW shortlist followed by an exact re-rank | `similarity/ann.py` |
-| Multimodal text + image search *(optional)* | Title embeddings (MiniLM) and photo embeddings (CLIP). The weights are configurable, and a missing photo falls back to text. | `similarity/embeddings.py`, `similarity/images.py` |
+| Multimodal text + image search  | Title embeddings (MiniLM) and photo embeddings (CLIP). The weights are configurable, and a missing photo falls back to text. | `similarity/embeddings.py`, `similarity/images.py` |
 | Suggested: caching | An LRU cache of each product's top 100 | `app.py` |
 | Suggested: dimensionality reduction | Considered, but not used. t-SNE is for drawing 2-D pictures, not for search, and at 30,000 products the index works on the full vectors. I'd add PCA at millions. | — |
 | Explain design decisions and trade-offs | The sections below, plus one notebook per stage | `notebooks/` |
